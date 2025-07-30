@@ -1,21 +1,32 @@
 from flask import Flask
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager
+from flask_jwt_extended import JWTManager, get_jwt
+from datetime import timedelta
 
 # Create app
 app = Flask(__name__)
-CORS(app)  # Enables CORS
+CORS(app)
 
-# ✅ Add JWT Config
-app.config['JWT_SECRET_KEY'] = 'admin_123'     # 🔐 CHANGE this before deploying
+# ✅ JWT Config
+app.config['JWT_SECRET_KEY'] = 'admin_123'
 app.config['JWT_TOKEN_LOCATION'] = ['headers']
 app.config['JWT_HEADER_NAME'] = 'Authorization'
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=99999)  # Token won't expire until logout
+app.config['JWT_BLACKLIST_ENABLED'] = True
+app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access']
 
 # ✅ Initialize JWT
 jwt = JWTManager(app)
 
-# Import and register blueprints
+# ✅ In-memory token blacklist
+blacklist = set()
+
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    return jwt_payload['jti'] in blacklist
+
+# ✅ Register Blueprints
 from doctor import doctor_bp
 from patient import patient_bp
 from admin import admin_bp
@@ -24,11 +35,9 @@ app.register_blueprint(doctor_bp)
 app.register_blueprint(patient_bp)
 app.register_blueprint(admin_bp)
 
-# Test route
 @app.route("/ping")
 def ping():
     return {"message": "Server is running"}
 
-# Run app
 if __name__ == "__main__":
     app.run(debug=True)
