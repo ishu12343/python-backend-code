@@ -146,7 +146,7 @@ def view_patient():
         cur = conn.cursor(dictionary=True)
         cur.execute("""
             SELECT id, full_name, email, mobile, date_of_birth, gender, blood_group,
-             address, emergency_contact, role
+             address, emergency_contact, role, is_active
             FROM patient
             WHERE id = %s
         """, (patient_id,))
