@@ -187,7 +187,7 @@ def get_profile():
 def patient_logout():
     try:
         jti = get_jwt()["jti"]
-        from doctor_appointment_mysql.app import blacklist
+        from app import blacklist
         blacklist.add(jti)
         return jsonify(message="✅ Patient logged out successfully. Token revoked."), 200
     except Exception as e:

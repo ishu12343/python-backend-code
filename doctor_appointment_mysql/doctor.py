@@ -1,17 +1,17 @@
+import logging
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import (
+    create_access_token, get_jwt_identity, jwt_required, get_jwt
+)
 from db import get_db_connection
 import bcrypt
-import jwt
 import datetime
-import os
-
-SECRET_KEY = os.environ.get("SECRET_KEY", "default_dev_secret")
 
 doctor_bp = Blueprint("doctor", __name__, url_prefix="/api/doctor")
 
-# ===========================
-# POST /api/doctor/register
-# ===========================
+# ---------------------------
+# Register API
+# ---------------------------
 @doctor_bp.route("/register", methods=["POST"])
 def register():
     try:
@@ -20,7 +20,7 @@ def register():
             return jsonify({"error": "Request body must be JSON"}), 400
 
         full_name = data.get("fullName")
-        email = data.get("email")
+        email = data.get("email", "").lower()
         password = data.get("password")
         mobile = data.get("mobile")
         location = data.get("location")
@@ -33,22 +33,19 @@ def register():
         clinic_address = data.get("clinicAddress")
         role = data.get("role", "DOCTOR")
 
-        # Required fields validation
         if not all([full_name, email, password, mobile]):
-            return jsonify({"error": "Missing required fields: fullName, email, password, mobile"}), 400
+            return jsonify({"error": "Missing required fields"}), 400
 
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Check if email already exists
         cursor.execute("SELECT id FROM doctors WHERE email = %s", (email,))
         if cursor.fetchone():
             conn.close()
             return jsonify({"error": "Email already registered"}), 409
 
-        # Insert new doctor
         cursor.execute("""
             INSERT INTO doctors (
                 full_name, email, password, mobile, location,
@@ -62,35 +59,31 @@ def register():
         ))
         conn.commit()
 
-        # Get inserted doctor ID
         cursor.execute("SELECT id FROM doctors WHERE email = %s", (email,))
         doctor = cursor.fetchone()
         conn.close()
 
         if not doctor:
-            return jsonify({"error": "Doctor registration failed, try again"}), 500
+            return jsonify({"error": "Registration failed"}), 500
 
-        payload = {
-            "doctor_id": doctor[0],
-            "email": email,
-            "role": role,
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(days=1)
-        }
-
-        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        access_token = create_access_token(
+            identity=str(doctor[0]),
+            additional_claims={"email": email, "role": role}
+        )
 
         return jsonify({
             "message": "✅ Doctor registered successfully",
-            "token": token
+            "token": access_token
         }), 201
 
     except Exception as e:
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+        logging.exception("Register Error")
+        return jsonify({"error": "Something went wrong. Please try again later."}), 500
 
 
-# =======================
-# POST /api/doctor/login
-# =======================
+# ---------------------------
+# Login API
+# ---------------------------
 @doctor_bp.route("/login", methods=["POST"])
 def login():
     try:
@@ -98,7 +91,7 @@ def login():
         if not data:
             return jsonify({"error": "Request body must be JSON"}), 400
 
-        email = data.get("email")
+        email = data.get("email", "").lower()
         password = data.get("password")
 
         if not email or not password:
@@ -110,24 +103,20 @@ def login():
         doctor = cursor.fetchone()
         conn.close()
 
-        if not doctor:
-            return jsonify({"error": "Doctor with this email does not exist"}), 404
-
-        if not bcrypt.checkpw(password.encode('utf-8'), doctor["password"].encode('utf-8')):
+        if not doctor or not bcrypt.checkpw(password.encode('utf-8'), doctor["password"].encode('utf-8')):
             return jsonify({"error": "Invalid email or password"}), 401
 
-        payload = {
-            "doctor_id": doctor["id"],
-            "email": doctor["email"],
-            "role": doctor["role"],
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(days=1)
-        }
-
-        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        access_token = create_access_token(
+            identity=str(doctor["id"]),
+            additional_claims={
+                "email": doctor["email"],
+                "role": doctor["role"]
+            }
+        )
 
         return jsonify({
             "message": "✅ Login successful",
-            "token": token,
+            "token": access_token,
             "doctor": {
                 "id": doctor["id"],
                 "name": doctor["full_name"],
@@ -137,24 +126,21 @@ def login():
         }), 200
 
     except Exception as e:
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+        logging.exception("Login Error")
+        return jsonify({"error": "Something went wrong. Please try again later."}), 500
 
 
-# =========================
-# GET /api/doctor/profile
-# =========================
+# ---------------------------
+# Profile API
+# ---------------------------
 @doctor_bp.route("/profile", methods=["GET"])
+@jwt_required()
 def get_profile():
-    token = request.headers.get("Authorization")
-    if not token:
-        return jsonify({"error": "Missing Authorization header"}), 401
-
-    if token.startswith("Bearer "):
-        token = token.split(" ")[1]
-
     try:
-        decoded = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        doctor_id = decoded["doctor_id"]
+        doctor_id = get_jwt_identity()
+        claims = get_jwt()
+        email = claims.get("email")
+        role = claims.get("role")
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -167,13 +153,30 @@ def get_profile():
         conn.close()
 
         if doctor:
-            return jsonify(doctor), 200
+            return jsonify({
+                "doctor": doctor,
+                "email": email,
+                "role": role
+            }), 200
         else:
             return jsonify({"error": "Doctor not found"}), 404
 
-    except jwt.ExpiredSignatureError:
-        return jsonify({"error": "Token expired"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"error": "Invalid token"}), 401
     except Exception as e:
-        return jsonify({"error": f"Failed to retrieve profile: {str(e)}"}), 500
+        logging.exception("Profile Error")
+        return jsonify({"error": "Something went wrong. Please try again later."}), 500
+
+
+# ---------------------------
+# Logout API
+# ---------------------------
+@doctor_bp.route("/logout", methods=["POST"])
+@jwt_required()
+def doctor_logout():
+    try:
+        jti = get_jwt()["jti"]
+        from app import blacklist
+        blacklist.add(jti)
+        return jsonify(message="✅ Doctor logged out successfully. Token revoked."), 200
+    except Exception as e:
+        logging.exception("Logout Error")
+        return jsonify({"error": "Something went wrong. Please try again later."}), 500

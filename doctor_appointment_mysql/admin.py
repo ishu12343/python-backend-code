@@ -4,7 +4,6 @@ from flask_jwt_extended import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from db import get_db_connection
-from doctor_appointment_mysql.patient import patient_bp
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -219,10 +218,10 @@ def activate_patient(pat_id):
     return jsonify(message="Patient activated"), 200
 
 
-@admin_bp.route("/admin/logout", methods=["POST"])
+@admin_bp.route("/api/admin/logout", methods=["POST"])
 @jwt_required()
 def admin_logout():
     jti = get_jwt()["jti"]
-    from doctor_appointment_mysql.app import blacklist
+    from app import blacklist
     blacklist.add(jti)
     return jsonify(message="Admin logged out successfully. Token revoked."), 200
