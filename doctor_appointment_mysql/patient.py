@@ -214,6 +214,83 @@ def get_profile():
         logging.exception("Profile Error")
         return jsonify({"error": "Something went wrong. Please try again later."}), 500
 
+# ---------------------------
+# profile update API
+# ---------------------------
+@patient_bp.route("/api/patient/updateprofile", methods=["PUT"])
+@jwt_required()
+def update_patient_profile():
+    try:
+        patient_id = get_jwt_identity()
+        data = request.form  # handles multipart/form-data
+
+        if not data:
+            return jsonify({"error": "Missing or invalid JSON payload"}), 400
+
+        # Fields you want to allow updating
+        allowed_fields = {
+            "full_name": data.get("fullName"),
+            "mobile": data.get("mobile"),
+            "gender": data.get("gender"),
+            "date_of_birth": data.get("dateOfBirth"),
+            "blood_group": data.get("bloodGroup"),
+            "address": data.get("address"),
+            "emergency_contact": data.get("emergencyContact"),
+            "photo_path": data.get("photoPath"),
+            "city": data.get("city"),
+            "state": data.get("state"),
+            "zip": data.get("zip"),
+            "country": data.get("country"),
+            "allergies": data.get("allergies"),
+            "conditions": data.get("conditions"),
+            "medications": data.get("medications"),
+            "surgeries": data.get("surgeries"),
+            "emergency_contact_name": data.get("emergencyContactName"),
+            "emergency_contact_number": data.get("emergencyContactNumber"),
+            "document_path": data.get("documentPath")
+        }
+
+        fields = []
+        values = []
+
+        for field, value in allowed_fields.items():
+            if value is not None:
+                fields.append(f"{field} = %s")
+                values.append(value)
+
+        if not fields:
+            return jsonify({"error": "No fields to update"}), 400
+
+        # values.append(patient_id)
+        #
+        # query = f"""
+        #     UPDATE patient
+        #     SET {', '.join(fields)}, updated_at = %s
+        #     WHERE id = %s
+        # """
+        # values.insert(-1, datetime.utcnow())  # Add updated_at before patient_id
+
+        values.append(datetime.datetime.utcnow())  # updated_at
+        values.append(patient_id)  # WHERE id = %s
+
+        query = f"""
+            UPDATE patient
+            SET {', '.join(fields)}, updated_at = %s
+            WHERE id = %s
+        """
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, values)
+        conn.commit()
+        conn.close()
+
+        return jsonify({"message": "✅ Patient profile updated successfully"}), 200
+
+    except Exception as e:
+        logging.exception("Error updating patient profile")
+        return jsonify({"error": "Something went wrong. Try again later."}), 500
+
 
 # ---------------------------
 # Logout API
