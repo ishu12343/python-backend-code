@@ -25,17 +25,32 @@ def register():
         if data is None:
             return jsonify({"error": "Invalid or missing JSON payload"}), 400
 
+        # Required Fields
         full_name = data.get("fullName")
         email = data.get("email", "").lower()
         password = data.get("password")
         mobile = data.get("mobile")
+
+        # Optional Fields
         date_of_birth = data.get("dateOfBirth")
         gender = data.get("gender")
         blood_group = data.get("bloodGroup")
         address = data.get("address")
         emergency_contact = data.get("emergencyContact")
+        city = data.get("city")
+        state = data.get("state")
+        zip_code = data.get("zip")
+        country = data.get("country")
+        allergies = data.get("allergies")
+        conditions = data.get("conditions")
+        medications = data.get("medications")
+        surgeries = data.get("surgeries")
+        emergency_contact_name = data.get("emergencyContactName")
+        emergency_contact_number = data.get("emergencyContactNumber")
+        document_path = data.get("documentPath")
         role = data.get("role", "PATIENT")
 
+        # Validation
         if not all([full_name, email, password, mobile]):
             return jsonify({"error": "Missing required fields"}), 400
 
@@ -69,12 +84,24 @@ def register():
 
         cursor.execute("""
             INSERT INTO patient (
-                full_name, email, password, mobile, date_of_birth, gender,
-                blood_group, address, emergency_contact, role, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                full_name, email, password, mobile, gender, date_of_birth, blood_group,
+                address, emergency_contact, city, state, zip, country,
+                allergies, conditions, medications, surgeries,
+                emergency_contact_name, emergency_contact_number, document_path,
+                role, is_active, verified, created_at, updated_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, NOW(), NOW()
+            )
         """, (
-            full_name, email, hashed_password, mobile, date_of_birth, gender,
-            blood_group, address, emergency_contact, role
+            full_name, email, hashed_password, mobile, gender, date_of_birth, blood_group,
+            address, emergency_contact, city, state, zip_code, country,
+            allergies, conditions, medications, surgeries,
+            emergency_contact_name, emergency_contact_number, document_path,
+            role, True, False
         ))
         conn.commit()
 
@@ -161,7 +188,16 @@ def get_profile():
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id, full_name, email, mobile FROM patient WHERE id = %s", (patient_id,))
+
+        cursor.execute("""
+            SELECT id, full_name, email, mobile, gender, date_of_birth, blood_group,
+                   address, emergency_contact, city, state, zip, country,
+                   allergies, conditions, medications, surgeries,
+                   emergency_contact_name, emergency_contact_number, document_path,
+                   photo_path, role, is_active, verified, created_at, updated_at
+            FROM patient
+            WHERE id = %s
+        """, (patient_id,))
         patient = cursor.fetchone()
         conn.close()
 
