@@ -180,3 +180,49 @@ def get_profile():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": "Failed to fetch profile", "details": str(e)}), 500
+
+@doctor_bp.route("/profile/update", methods=["PUT"])
+@jwt_required()
+def update_profile():
+    try:
+        doctor_id = int(get_jwt_identity())
+        data = request.get_json()
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        fields = [
+            "full_name", "email", "mobile", "gender", "location", "registration_number",
+            "council", "degree", "specialty", "experience", "clinic_name", "clinic_address",
+            "profile_photo", "dob", "blood_group", "available_days", "available_from",
+            "available_to", "city", "state", "zip_code", "languages", "status", "documents"
+        ]
+
+        updates = []
+        values = []
+
+        for field in fields:
+            if field in data:
+                updates.append(f"{field} = %s")
+                values.append(data[field])
+
+        if not updates:
+            return jsonify({"error": "No fields to update"}), 400
+
+        values.append(doctor_id)
+
+        query = f"""
+            UPDATE doctors SET {', '.join(updates)}, updated_at = NOW()
+            WHERE id = %s
+        """
+        cursor.execute(query, tuple(values))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Profile updated successfully"}), 200
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": "Profile update failed", "details": str(e)}), 500
+
