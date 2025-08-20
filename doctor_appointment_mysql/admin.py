@@ -184,6 +184,52 @@ def reject_doctor(doc_id):
     return jsonify(message="Doctor rejected"), 200
 
 
+# --- Suspend Doctor ---
+@admin_bp.route("/admin/doctors/<int:doc_id>/suspend", methods=["PUT"])
+@jwt_required()
+def suspend_doctor(doc_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE doctors SET suspended=1 WHERE id=%s", (doc_id,))
+        
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify(error="Doctor not found"), 404
+        
+        conn.commit()
+        conn.close()
+        return jsonify(message="Doctor suspended successfully"), 200
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify(error="Failed to suspend doctor", details=str(e)), 500
+
+
+# --- Unsuspend Doctor ---
+@admin_bp.route("/admin/doctors/<int:doc_id>/unsuspend", methods=["PUT"])
+@jwt_required()
+def unsuspend_doctor(doc_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE doctors SET suspended=0 WHERE id=%s", (doc_id,))
+        
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify(error="Doctor not found"), 404
+        
+        conn.commit()
+        conn.close()
+        return jsonify(message="Doctor unsuspended successfully"), 200
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify(error="Failed to unsuspend doctor", details=str(e)), 500
+
+
 # --- List Patients ---
 @admin_bp.route("/admin/patients", methods=["GET"])
 @jwt_required()
