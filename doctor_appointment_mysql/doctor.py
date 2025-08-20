@@ -48,6 +48,7 @@ def register():
             "gender": data["gender"],
             "location": data["location"],
             "registration_number": data["registration_number"],
+            "license_number": data["license_number"],
             "council": data["council"],
             "degree": data["degree"],
             "specialty": data["specialty"],
@@ -223,10 +224,10 @@ def update_profile():
         cursor = conn.cursor(dictionary=True)
 
         fields = [
-            "full_name", "email", "mobile", "gender", "location", "registration_number",
+            "full_name", "email", "mobile", "gender", "location", "registration_number", 
             "council", "degree", "specialty", "experience", "clinic_name", "clinic_address",
             "profile_photo", "dob", "blood_group", "available_days", "available_from",
-            "available_to", "city", "state", "zip_code", "languages", "status", "documents"
+            "available_to", "city", "state", "zip_code", "languages", "status", "documents", "license_number"
         ]
 
         updates = []
