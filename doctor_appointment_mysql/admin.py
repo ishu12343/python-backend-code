@@ -166,7 +166,8 @@ def view_patient():
 def approve_doctor(doc_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE doctors SET approved=1 WHERE id=%s", (doc_id,))
+    # Approve the doctor and update status to ACTIVE
+    cur.execute("UPDATE doctors SET approved=1, suspended=0, status='ACTIVE' WHERE id=%s", (doc_id,))
     conn.commit()
     conn.close()
     return jsonify(message="Doctor approved"), 200
@@ -178,7 +179,8 @@ def approve_doctor(doc_id):
 def reject_doctor(doc_id):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE doctors SET approved=0 WHERE id=%s", (doc_id,))
+    # Reject the doctor and update status to INACTIVE
+    cur.execute("UPDATE doctors SET approved=0, suspended=0, status='INACTIVE' WHERE id=%s", (doc_id,))
     conn.commit()
     conn.close()
     return jsonify(message="Doctor rejected"), 200
@@ -191,7 +193,8 @@ def suspend_doctor(doc_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("UPDATE doctors SET suspended=1 WHERE id=%s", (doc_id,))
+        # Suspend the doctor and update status to SUSPENDED
+        cur.execute("UPDATE doctors SET suspended=1, status='SUSPENDED' WHERE id=%s", (doc_id,))
         
         if cur.rowcount == 0:
             conn.close()
@@ -214,7 +217,16 @@ def unsuspend_doctor(doc_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("UPDATE doctors SET suspended=0 WHERE id=%s", (doc_id,))
+        # Unsuspend the doctor and restore to ACTIVE status if approved
+        cur.execute("""
+            UPDATE doctors 
+            SET suspended=0, 
+                status=CASE 
+                    WHEN approved=1 THEN 'ACTIVE' 
+                    ELSE 'INACTIVE' 
+                END 
+            WHERE id=%s
+        """, (doc_id,))
         
         if cur.rowcount == 0:
             conn.close()

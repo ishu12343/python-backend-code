@@ -109,6 +109,17 @@ def login():
         doctor = cursor.fetchone()
 
         if doctor and bcrypt.checkpw(data["password"].encode("utf-8"), doctor["password"].encode("utf-8")):
+            # Check if doctor is approved and not suspended
+            if not doctor.get("approved"):
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Your account is pending approval by the admin. Please wait for approval."}), 403
+            
+            if doctor.get("suspended"):
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Your account has been suspended by the admin. Please contact support."}), 403
+
             access_token = create_access_token(
                 identity=str(doctor["id"]),
                 additional_claims={"role": "DOCTOR"},
@@ -125,7 +136,9 @@ def login():
                     "full_name": doctor["full_name"],
                     "email": doctor["email"],
                     "mobile": doctor["mobile"],
-                    "role": doctor["role"]
+                    "role": doctor["role"],
+                    "approved": doctor["approved"],
+                    "suspended": doctor["suspended"]
                 }
             }), 200
 
@@ -158,11 +171,29 @@ def get_profile():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM doctors WHERE id = %s", (doctor_id,))
         doctor = cursor.fetchone()
+        
+        if not doctor:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Doctor not found"}), 404
+
+        # Sync the status field based on approval and suspension status
+        new_status = 'INACTIVE'  # default
+        if doctor.get('suspended'):
+            new_status = 'SUSPENDED'
+        elif doctor.get('approved'):
+            new_status = 'ACTIVE'
+        else:
+            new_status = 'PENDING'
+        
+        # Update the status if it's different
+        if doctor.get('status') != new_status:
+            cursor.execute("UPDATE doctors SET status=%s WHERE id=%s", (new_status, doctor_id))
+            conn.commit()
+            doctor['status'] = new_status
+
         cursor.close()
         conn.close()
-
-        if not doctor:
-            return jsonify({"error": "Doctor not found"}), 404
 
         # Remove password
         doctor.pop("password", None)
