@@ -258,3 +258,335 @@ def update_profile():
         traceback.print_exc()
         return jsonify({"error": "Profile update failed", "details": str(e)}), 500
 
+
+# APPOINTMENT MANAGEMENT ENDPOINTS
+
+@doctor_bp.route("/appointments", methods=["GET"])
+@jwt_required()
+def get_appointments():
+    """Get all appointments for the logged-in doctor"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        query = """
+            SELECT 
+                a.id,
+                a.appointment_datetime,
+                a.reason,
+                a.status,
+                a.created_at,
+                p.full_name as patient_name,
+                p.email as patient_email,
+                p.mobile as patient_phone,
+                p.blood_group as patient_blood_group,
+                p.gender as patient_gender
+            FROM appointments a
+            JOIN patients p ON a.patient_id = p.id
+            WHERE a.doctor_id = %s
+            ORDER BY a.appointment_datetime DESC
+        """
+        
+        cursor.execute(query, (doctor_id,))
+        appointments = cursor.fetchall()
+        
+        # Convert datetime objects to strings
+        for appointment in appointments:
+            if appointment['appointment_datetime']:
+                appointment['appointment_datetime'] = appointment['appointment_datetime'].strftime('%Y-%m-%d %H:%M:%S')
+            if appointment['created_at']:
+                appointment['created_at'] = appointment['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "appointments": appointments
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to fetch appointments",
+            "details": str(e)
+        }), 500
+
+
+@doctor_bp.route("/appointments/<int:appointment_id>/approve", methods=["POST"])
+@jwt_required()
+def approve_appointment(appointment_id):
+    """Approve a pending appointment"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # First verify the appointment belongs to this doctor
+        verify_query = """
+            SELECT id, status FROM appointments 
+            WHERE id = %s AND doctor_id = %s
+        """
+        cursor.execute(verify_query, (appointment_id, doctor_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            return jsonify({
+                "success": False,
+                "error": "Appointment not found or unauthorized"
+            }), 404
+            
+        if appointment['status'] != 'PENDING':
+            return jsonify({
+                "success": False,
+                "error": "Only pending appointments can be approved"
+            }), 400
+
+        # Update appointment status to CONFIRMED
+        update_query = """
+            UPDATE appointments 
+            SET status = 'CONFIRMED', updated_at = NOW()
+            WHERE id = %s
+        """
+        cursor.execute(update_query, (appointment_id,))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment approved successfully"
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to approve appointment",
+            "details": str(e)
+        }), 500
+
+
+@doctor_bp.route("/appointments/<int:appointment_id>/reject", methods=["POST"])
+@jwt_required()
+def reject_appointment(appointment_id):
+    """Reject/Cancel a pending appointment"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # First verify the appointment belongs to this doctor
+        verify_query = """
+            SELECT id, status FROM appointments 
+            WHERE id = %s AND doctor_id = %s
+        """
+        cursor.execute(verify_query, (appointment_id, doctor_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            return jsonify({
+                "success": False,
+                "error": "Appointment not found or unauthorized"
+            }), 404
+            
+        if appointment['status'] not in ['PENDING', 'CONFIRMED']:
+            return jsonify({
+                "success": False,
+                "error": "Only pending or confirmed appointments can be rejected"
+            }), 400
+
+        # Update appointment status to CANCELLED
+        update_query = """
+            UPDATE appointments 
+            SET status = 'CANCELLED', updated_at = NOW()
+            WHERE id = %s
+        """
+        cursor.execute(update_query, (appointment_id,))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment rejected successfully"
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to reject appointment",
+            "details": str(e)
+        }), 500
+
+
+@doctor_bp.route("/appointments/<int:appointment_id>/complete", methods=["POST"])
+@jwt_required()
+def complete_appointment(appointment_id):
+    """Mark a confirmed appointment as completed"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # First verify the appointment belongs to this doctor
+        verify_query = """
+            SELECT id, status FROM appointments 
+            WHERE id = %s AND doctor_id = %s
+        """
+        cursor.execute(verify_query, (appointment_id, doctor_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            return jsonify({
+                "success": False,
+                "error": "Appointment not found or unauthorized"
+            }), 404
+            
+        if appointment['status'] != 'CONFIRMED':
+            return jsonify({
+                "success": False,
+                "error": "Only confirmed appointments can be marked as completed"
+            }), 400
+
+        # Update appointment status to COMPLETED
+        update_query = """
+            UPDATE appointments 
+            SET status = 'COMPLETED', updated_at = NOW()
+            WHERE id = %s
+        """
+        cursor.execute(update_query, (appointment_id,))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment marked as completed"
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to complete appointment",
+            "details": str(e)
+        }), 500
+
+
+@doctor_bp.route("/appointments/<int:appointment_id>/reschedule", methods=["POST"])
+@jwt_required()
+def reschedule_appointment(appointment_id):
+    """Reschedule an appointment to a new date and time"""
+    try:
+        doctor_id = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data.get('new_date') or not data.get('new_time'):
+            return jsonify({
+                "success": False,
+                "error": "New date and time are required"
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # First verify the appointment belongs to this doctor
+        verify_query = """
+            SELECT id, status FROM appointments 
+            WHERE id = %s AND doctor_id = %s
+        """
+        cursor.execute(verify_query, (appointment_id, doctor_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            return jsonify({
+                "success": False,
+                "error": "Appointment not found or unauthorized"
+            }), 404
+            
+        if appointment['status'] not in ['PENDING', 'CONFIRMED']:
+            return jsonify({
+                "success": False,
+                "error": "Only pending or confirmed appointments can be rescheduled"
+            }), 400
+
+        # Combine new date and time
+        new_datetime = f"{data['new_date']} {data['new_time']}:00"
+        
+        # Update appointment with new datetime
+        update_query = """
+            UPDATE appointments 
+            SET appointment_datetime = %s, 
+                status = 'CONFIRMED',
+                updated_at = NOW()
+            WHERE id = %s
+        """
+        cursor.execute(update_query, (new_datetime, appointment_id))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment rescheduled successfully",
+            "new_datetime": new_datetime
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to reschedule appointment",
+            "details": str(e)
+        }), 500
+
+
+@doctor_bp.route("/appointments/stats", methods=["GET"])
+@jwt_required()
+def get_appointment_stats():
+    """Get appointment statistics for the doctor"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get overall stats
+        stats_query = """
+            SELECT 
+                COUNT(*) as total_appointments,
+                SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) as pending_appointments,
+                SUM(CASE WHEN status = 'CONFIRMED' THEN 1 ELSE 0 END) as confirmed_appointments,
+                SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed_appointments,
+                SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as cancelled_appointments,
+                SUM(CASE WHEN DATE(appointment_datetime) = CURDATE() AND status = 'CONFIRMED' THEN 1 ELSE 0 END) as today_appointments
+            FROM appointments 
+            WHERE doctor_id = %s
+        """
+        
+        cursor.execute(stats_query, (doctor_id,))
+        stats = cursor.fetchone()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "stats": stats
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to fetch appointment stats",
+            "details": str(e)
+        }), 500

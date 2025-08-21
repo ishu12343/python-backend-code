@@ -306,3 +306,248 @@ def patient_logout():
     except Exception as e:
         logging.exception("Logout Error")
         return jsonify({"error": "Something went wrong. Please try again later."}), 500
+
+
+# ---------------------------
+# List Available Doctors API
+# ---------------------------
+@patient_bp.route("/api/patient/doctors", methods=["GET"])
+@jwt_required()
+def list_available_doctors():
+    try:
+        # Get query parameters for filtering
+        specialty = request.args.get("specialty")
+        city = request.args.get("city")
+        search = request.args.get("search")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Base query for approved and active doctors
+        query = """
+            SELECT 
+                id, full_name, email, mobile, specialty, degree, experience,
+                clinic_name, clinic_address, city, state, available_days,
+                available_from, available_to, languages, profile_photo
+            FROM doctors 
+            WHERE approved = 1 AND suspended = 0 AND status = 'ACTIVE'
+        """
+        params = []
+        
+        # Add filters
+        if specialty:
+            query += " AND specialty LIKE %s"
+            params.append(f"%{specialty}%")
+        
+        if city:
+            query += " AND city LIKE %s"
+            params.append(f"%{city}%")
+            
+        if search:
+            query += " AND (full_name LIKE %s OR specialty LIKE %s)"
+            params.extend([f"%{search}%", f"%{search}%"])
+        
+        query += " ORDER BY full_name"
+        
+        cursor.execute(query, params)
+        doctors = cursor.fetchall()
+        
+        # Format the response
+        formatted_doctors = []
+        for doctor in doctors:
+            # Convert timedelta fields to string format
+            if doctor.get('available_from'):
+                if hasattr(doctor['available_from'], 'total_seconds'):
+                    total_seconds = int(doctor['available_from'].total_seconds())
+                    hours = total_seconds // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    doctor['available_from'] = f"{hours:02d}:{minutes:02d}"
+            
+            if doctor.get('available_to'):
+                if hasattr(doctor['available_to'], 'total_seconds'):
+                    total_seconds = int(doctor['available_to'].total_seconds())
+                    hours = total_seconds // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    doctor['available_to'] = f"{hours:02d}:{minutes:02d}"
+            
+            if doctor.get('experience'):
+                if hasattr(doctor['experience'], 'total_seconds'):
+                    total_seconds = int(doctor['experience'].total_seconds())
+                    years = total_seconds // (365 * 24 * 3600)
+                    doctor['experience'] = f"{years} years"
+            
+            formatted_doctors.append(doctor)
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "doctors": formatted_doctors,
+            "count": len(formatted_doctors)
+        }), 200
+        
+    except Exception as e:
+        logging.exception("Error fetching doctors")
+        return jsonify({"error": "Failed to fetch doctors"}), 500
+
+
+# ---------------------------
+# Book Appointment API
+# ---------------------------
+@patient_bp.route("/api/patient/appointments/book", methods=["POST"])
+@jwt_required()
+def book_appointment():
+    try:
+        patient_id = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ["doctor_id", "appointment_date", "appointment_time", "reason"]
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({"error": f"{field} is required"}), 400
+        
+        doctor_id = data.get("doctor_id")
+        appointment_date = data.get("appointment_date")
+        appointment_time = data.get("appointment_time")
+        reason = data.get("reason")
+        
+        # Combine date and time
+        appointment_datetime = f"{appointment_date} {appointment_time}"
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if doctor exists and is available
+        cursor.execute("""
+            SELECT id, full_name, available_days, available_from, available_to 
+            FROM doctors 
+            WHERE id = %s AND approved = 1 AND suspended = 0 AND status = 'ACTIVE'
+        """, (doctor_id,))
+        doctor = cursor.fetchone()
+        
+        if not doctor:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Doctor not found or not available"}), 404
+        
+        # Check for existing appointment at the same time
+        cursor.execute("""
+            SELECT id FROM appointments 
+            WHERE doctor_id = %s AND appointment_datetime = %s AND status != 'CANCELLED'
+        """, (doctor_id, appointment_datetime))
+        existing_appointment = cursor.fetchone()
+        
+        if existing_appointment:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "This time slot is already booked"}), 409
+        
+        # Create appointment
+        cursor.execute("""
+            INSERT INTO appointments (patient_id, doctor_id, appointment_datetime, reason, status, created_at)
+            VALUES (%s, %s, %s, %s, 'PENDING', NOW())
+        """, (patient_id, doctor_id, appointment_datetime, reason))
+        
+        appointment_id = cursor.lastrowid
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment booked successfully",
+            "appointment_id": appointment_id,
+            "doctor_name": doctor["full_name"]
+        }), 201
+        
+    except Exception as e:
+        logging.exception("Error booking appointment")
+        return jsonify({"error": "Failed to book appointment"}), 500
+
+
+# ---------------------------
+# Get Patient Appointments API
+# ---------------------------
+@patient_bp.route("/api/patient/appointments", methods=["GET"])
+@jwt_required()
+def get_patient_appointments():
+    try:
+        patient_id = get_jwt_identity()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT 
+                a.id, a.appointment_datetime, a.reason, a.status, a.created_at,
+                d.full_name as doctor_name, d.specialty, d.clinic_name, d.mobile as doctor_mobile
+            FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            WHERE a.patient_id = %s
+            ORDER BY a.appointment_datetime DESC
+        """, (patient_id,))
+        
+        appointments = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "appointments": appointments
+        }), 200
+        
+    except Exception as e:
+        logging.exception("Error fetching appointments")
+        return jsonify({"error": "Failed to fetch appointments"}), 500
+
+
+# ---------------------------
+# Cancel Appointment API
+# ---------------------------
+@patient_bp.route("/api/patient/appointments/<int:appointment_id>/cancel", methods=["PUT"])
+@jwt_required()
+def cancel_appointment(appointment_id):
+    try:
+        patient_id = get_jwt_identity()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if appointment exists and belongs to patient
+        cursor.execute("""
+            SELECT id, status FROM appointments 
+            WHERE id = %s AND patient_id = %s
+        """, (appointment_id, patient_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Appointment not found"}), 404
+        
+        if appointment["status"] == "CANCELLED":
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Appointment is already cancelled"}), 400
+        
+        # Cancel appointment
+        cursor.execute("""
+            UPDATE appointments 
+            SET status = 'CANCELLED' 
+            WHERE id = %s
+        """, (appointment_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment cancelled successfully"
+        }), 200
+        
+    except Exception as e:
+        logging.exception("Error cancelling appointment")
+        return jsonify({"error": "Failed to cancel appointment"}), 500
