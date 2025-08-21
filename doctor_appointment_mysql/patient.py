@@ -551,3 +551,90 @@ def cancel_appointment(appointment_id):
     except Exception as e:
         logging.exception("Error cancelling appointment")
         return jsonify({"error": "Failed to cancel appointment"}), 500
+
+# ---------------------------
+# Reschedule Appointment API
+# ---------------------------
+@patient_bp.route("/api/patient/appointments/<int:appointment_id>/reschedule", methods=["POST"])
+@jwt_required()
+def reschedule_appointment(appointment_id):
+    """Reschedule an appointment to a new date and time"""
+    try:
+        patient_id = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data.get('new_date') or not data.get('new_time'):
+            return jsonify({
+                "success": False,
+                "error": "New date and time are required"
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # First verify the appointment belongs to this patient
+        cursor.execute("""
+            SELECT id, status, doctor_id FROM appointments 
+            WHERE id = %s AND patient_id = %s
+        """, (appointment_id, patient_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Appointment not found or unauthorized"
+            }), 404
+            
+        if appointment['status'] not in ['PENDING', 'CONFIRMED', 'CANCELLED']:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Only pending, confirmed, or cancelled appointments can be rescheduled"
+            }), 400
+
+        # Combine new date and time
+        new_datetime = f"{data['new_date']} {data['new_time']}:00"
+        
+        # Check if the new time slot is available for the doctor
+        cursor.execute("""
+            SELECT id FROM appointments 
+            WHERE doctor_id = %s AND appointment_datetime = %s AND status != 'CANCELLED' AND id != %s
+        """, (appointment['doctor_id'], new_datetime, appointment_id))
+        existing_appointment = cursor.fetchone()
+        
+        if existing_appointment:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "This time slot is already booked with the doctor"
+            }), 409
+        
+        # Update appointment with new datetime and set status to PENDING for doctor approval
+        cursor.execute("""
+            UPDATE appointments 
+            SET appointment_datetime = %s, 
+                status = 'PENDING'
+            WHERE id = %s
+        """, (new_datetime, appointment_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Appointment rescheduled successfully. Waiting for doctor confirmation.",
+            "new_datetime": new_datetime
+        }), 200
+        
+    except Exception as e:
+        logging.exception("Error rescheduling appointment")
+        return jsonify({
+            "success": False,
+            "error": "Failed to reschedule appointment"
+        }), 500
