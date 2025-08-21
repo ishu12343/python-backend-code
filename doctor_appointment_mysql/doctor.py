@@ -347,7 +347,7 @@ def approve_appointment(appointment_id):
         # Update appointment status to CONFIRMED
         update_query = """
             UPDATE appointments 
-            SET status = 'CONFIRMED', updated_at = NOW()
+            SET status = 'CONFIRMED'
             WHERE id = %s
         """
         cursor.execute(update_query, (appointment_id,))
@@ -402,7 +402,7 @@ def reject_appointment(appointment_id):
         # Update appointment status to CANCELLED
         update_query = """
             UPDATE appointments 
-            SET status = 'CANCELLED', updated_at = NOW()
+            SET status = 'CANCELLED'
             WHERE id = %s
         """
         cursor.execute(update_query, (appointment_id,))
@@ -457,7 +457,7 @@ def complete_appointment(appointment_id):
         # Update appointment status to COMPLETED
         update_query = """
             UPDATE appointments 
-            SET status = 'COMPLETED', updated_at = NOW()
+            SET status = 'COMPLETED'
             WHERE id = %s
         """
         cursor.execute(update_query, (appointment_id,))
