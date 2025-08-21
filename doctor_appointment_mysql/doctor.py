@@ -283,7 +283,7 @@ def get_appointments():
                 p.blood_group as patient_blood_group,
                 p.gender as patient_gender
             FROM appointments a
-            JOIN patients p ON a.patient_id = p.id
+            JOIN patient p ON a.patient_id = p.id
             WHERE a.doctor_id = %s
             ORDER BY a.appointment_datetime DESC
         """
