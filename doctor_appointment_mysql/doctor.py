@@ -4,11 +4,9 @@ import bcrypt
 import datetime
 import os
 import traceback
-import uuid
-from werkzeug.utils import secure_filename
 from flask_jwt_extended import (
-    JWTManager, jwt_required, create_access_token,
-    get_jwt_identity, get_jwt, unset_jwt_cookies
+    jwt_required, create_access_token,
+    get_jwt_identity, unset_jwt_cookies
 )
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "your_dev_secret")
@@ -259,99 +257,6 @@ def update_profile():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": "Profile update failed", "details": str(e)}), 500
-
-
-# FILE UPLOAD CONFIGURATION
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'doc', 'docx'}
-
-# Create uploads directory if it doesn't exist
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-@doctor_bp.route("/upload-files", methods=["POST"])
-@jwt_required()
-def upload_files():
-    try:
-        doctor_id = int(get_jwt_identity())
-        
-        # Check if the post request has the file part
-        uploaded_files = {}
-        
-        if 'profile_photo' in request.files:
-            file = request.files['profile_photo']
-            if file and file.filename != '' and allowed_file(file.filename):
-                # Generate unique filename
-                filename = secure_filename(file.filename)
-                unique_filename = f"profile_{doctor_id}_{uuid.uuid4().hex[:8]}_{filename}"
-                filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
-                file.save(filepath)
-                uploaded_files['profile_photo'] = unique_filename
-        
-        if 'document' in request.files:
-            file = request.files['document']
-            if file and file.filename != '' and allowed_file(file.filename):
-                # Generate unique filename
-                filename = secure_filename(file.filename)
-                unique_filename = f"doc_{doctor_id}_{uuid.uuid4().hex[:8]}_{filename}"
-                filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
-                file.save(filepath)
-                uploaded_files['documents'] = unique_filename
-        
-        if not uploaded_files:
-            return jsonify({"error": "No valid files uploaded"}), 400
-        
-        # Update database with file paths
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        updates = []
-        values = []
-        
-        if 'profile_photo' in uploaded_files:
-            updates.append("profile_photo = %s")
-            values.append(uploaded_files['profile_photo'])
-        
-        if 'documents' in uploaded_files:
-            updates.append("documents = %s")
-            values.append(uploaded_files['documents'])
-        
-        values.append(doctor_id)
-        
-        query = f"""
-            UPDATE doctors SET {', '.join(updates)}, updated_at = NOW()
-            WHERE id = %s
-        """
-        cursor.execute(query, tuple(values))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        return jsonify({
-            "message": "Files uploaded successfully",
-            "uploaded_files": uploaded_files
-        }), 200
-        
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": "File upload failed", "details": str(e)}), 500
-
-
-# FILE SERVING ENDPOINT
-@doctor_bp.route("/files/<filename>", methods=["GET"])
-def serve_file(filename):
-    """Serve uploaded files"""
-    try:
-        from flask import send_from_directory
-        return send_from_directory(UPLOAD_FOLDER, filename)
-    except FileNotFoundError:
-        return jsonify({"error": "File not found"}), 404
-    except Exception as e:
-        return jsonify({"error": "Failed to serve file", "details": str(e)}), 500
 
 
 # APPOINTMENT MANAGEMENT ENDPOINTS
