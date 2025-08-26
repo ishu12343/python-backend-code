@@ -807,3 +807,129 @@ def get_recent_activities():
             "error": "Failed to fetch recent activities",
             "details": str(e)
         }), 500
+
+
+# ---------------------------
+# Doctor Ratings APIs
+# ---------------------------
+@doctor_bp.route("/ratings", methods=["GET"])
+@jwt_required()
+def get_doctor_ratings():
+    """Get all ratings for the logged-in doctor"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get all ratings with patient and appointment details
+        ratings_query = """
+            SELECT 
+                r.id,
+                r.rating,
+                r.review,
+                r.created_at,
+                p.full_name as patient_name,
+                p.email as patient_email,
+                a.appointment_datetime,
+                a.reason as appointment_reason
+            FROM ratings r
+            INNER JOIN patient p ON r.patient_id = p.id
+            INNER JOIN appointments a ON r.appointment_id = a.id
+            WHERE r.doctor_id = %s
+            ORDER BY r.created_at DESC
+        """
+        
+        cursor.execute(ratings_query, (doctor_id,))
+        ratings = cursor.fetchall()
+        
+        # Get rating statistics
+        stats_query = """
+            SELECT 
+                COUNT(*) as total_ratings,
+                AVG(rating) as average_rating,
+                SUM(CASE WHEN rating = 5 THEN 1 ELSE 0 END) as five_star,
+                SUM(CASE WHEN rating = 4 THEN 1 ELSE 0 END) as four_star,
+                SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as three_star,
+                SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as two_star,
+                SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as one_star
+            FROM ratings 
+            WHERE doctor_id = %s
+        """
+        
+        cursor.execute(stats_query, (doctor_id,))
+        stats = cursor.fetchone()
+        
+        # Format datetime objects
+        for rating in ratings:
+            if rating.get('created_at'):
+                if hasattr(rating['created_at'], 'isoformat'):
+                    rating['created_at'] = rating['created_at'].isoformat()
+            if rating.get('appointment_datetime'):
+                if hasattr(rating['appointment_datetime'], 'isoformat'):
+                    rating['appointment_datetime'] = rating['appointment_datetime'].isoformat()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "ratings": ratings,
+            "statistics": {
+                "total_ratings": stats['total_ratings'] or 0,
+                "average_rating": round(float(stats['average_rating'] or 0), 2),
+                "star_distribution": {
+                    "5": stats['five_star'] or 0,
+                    "4": stats['four_star'] or 0,
+                    "3": stats['three_star'] or 0,
+                    "2": stats['two_star'] or 0,
+                    "1": stats['one_star'] or 0
+                }
+            }
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to fetch ratings",
+            "details": str(e)
+        }), 500
+
+
+@doctor_bp.route("/ratings/summary", methods=["GET"])
+@jwt_required()
+def get_rating_summary():
+    """Get rating summary for dashboard"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get current ratings from the database
+        summary_query = """
+            SELECT 
+                COALESCE(AVG(rating), 0) as average_rating,
+                COUNT(*) as total_reviews
+            FROM ratings 
+            WHERE doctor_id = %s
+        """
+        
+        cursor.execute(summary_query, (doctor_id,))
+        summary = cursor.fetchone()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "rating": round(float(summary['average_rating'] or 0), 1),
+            "reviewCount": summary['total_reviews'] or 0
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to fetch rating summary",
+            "details": str(e)
+        }), 500

@@ -323,31 +323,34 @@ def list_available_doctors():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Base query for approved and active doctors
+        # Base query for approved and active doctors with rating information
         query = """
             SELECT 
-                id, full_name, email, mobile, specialty, degree, experience,
-                clinic_name, clinic_address, city, state, available_days,
-                available_from, available_to, languages, profile_photo
-            FROM doctors 
-            WHERE approved = 1 AND suspended = 0 AND status = 'ACTIVE'
+                d.id, d.full_name, d.email, d.mobile, d.specialty, d.degree, d.experience,
+                d.clinic_name, d.clinic_address, d.city, d.state, d.available_days,
+                d.available_from, d.available_to, d.languages, d.profile_photo,
+                COALESCE(AVG(r.rating), 0) as average_rating,
+                COUNT(r.id) as total_reviews
+            FROM doctors d
+            LEFT JOIN ratings r ON d.id = r.doctor_id
+            WHERE d.approved = 1 AND d.suspended = 0 AND d.status = 'ACTIVE'
         """
         params = []
         
         # Add filters
         if specialty:
-            query += " AND specialty LIKE %s"
+            query += " AND d.specialty LIKE %s"
             params.append(f"%{specialty}%")
         
         if city:
-            query += " AND city LIKE %s"
+            query += " AND d.city LIKE %s"
             params.append(f"%{city}%")
             
         if search:
-            query += " AND (full_name LIKE %s OR specialty LIKE %s)"
+            query += " AND (d.full_name LIKE %s OR d.specialty LIKE %s)"
             params.extend([f"%{search}%", f"%{search}%"])
         
-        query += " ORDER BY full_name"
+        query += " GROUP BY d.id ORDER BY d.full_name"
         
         cursor.execute(query, params)
         doctors = cursor.fetchall()
@@ -375,6 +378,15 @@ def list_available_doctors():
                     total_seconds = int(doctor['experience'].total_seconds())
                     years = total_seconds // (365 * 24 * 3600)
                     doctor['experience'] = f"{years} years"
+            
+            # Format rating information
+            if doctor.get('average_rating'):
+                doctor['average_rating'] = round(float(doctor['average_rating']), 1)
+            else:
+                doctor['average_rating'] = 0.0
+                
+            if not doctor.get('total_reviews'):
+                doctor['total_reviews'] = 0
             
             formatted_doctors.append(doctor)
         
@@ -482,9 +494,11 @@ def get_patient_appointments():
         cursor.execute("""
             SELECT 
                 a.id, a.appointment_datetime, a.reason, a.status, a.created_at,
-                d.full_name as doctor_name, d.specialty, d.clinic_name, d.mobile as doctor_mobile
+                d.full_name as doctor_name, d.specialty, d.clinic_name, d.mobile as doctor_mobile,
+                CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END as has_rating
             FROM appointments a
             JOIN doctors d ON a.doctor_id = d.id
+            LEFT JOIN ratings r ON a.id = r.appointment_id
             WHERE a.patient_id = %s
             ORDER BY a.appointment_datetime DESC
         """, (patient_id,))
@@ -638,3 +652,152 @@ def reschedule_appointment(appointment_id):
             "success": False,
             "error": "Failed to reschedule appointment"
         }), 500
+
+
+# ---------------------------
+# Rate Doctor API
+# ---------------------------
+@patient_bp.route("/api/patient/appointments/<int:appointment_id>/rate", methods=["POST"])
+@jwt_required()
+def rate_doctor(appointment_id):
+    """Rate a doctor after appointment completion"""
+    try:
+        patient_id = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate required fields
+        if not data.get('rating') or data.get('rating') < 1 or data.get('rating') > 5:
+            return jsonify({
+                "success": False,
+                "error": "Rating must be between 1 and 5"
+            }), 400
+        
+        rating = data.get('rating')
+        review = data.get('review', '')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # First verify the appointment belongs to this patient and is completed
+        cursor.execute("""
+            SELECT id, status, doctor_id FROM appointments 
+            WHERE id = %s AND patient_id = %s
+        """, (appointment_id, patient_id))
+        appointment = cursor.fetchone()
+        
+        if not appointment:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Appointment not found or unauthorized"
+            }), 404
+            
+        if appointment['status'] != 'COMPLETED':
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Only completed appointments can be rated"
+            }), 400
+
+        # Check if rating already exists for this appointment
+        cursor.execute("""
+            SELECT id FROM ratings 
+            WHERE appointment_id = %s
+        """, (appointment_id,))
+        existing_rating = cursor.fetchone()
+        
+        if existing_rating:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "This appointment has already been rated"
+            }), 409
+        
+        # Insert rating
+        cursor.execute("""
+            INSERT INTO ratings (appointment_id, patient_id, doctor_id, rating, review, created_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+        """, (appointment_id, patient_id, appointment['doctor_id'], rating, review))
+        
+        rating_id = cursor.lastrowid
+        
+        # Update doctor's average rating
+        cursor.execute("""
+            UPDATE doctors SET 
+                average_rating = (
+                    SELECT AVG(rating) FROM ratings WHERE doctor_id = %s
+                ),
+                total_reviews = (
+                    SELECT COUNT(*) FROM ratings WHERE doctor_id = %s
+                )
+            WHERE id = %s
+        """, (appointment['doctor_id'], appointment['doctor_id'], appointment['doctor_id']))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Rating submitted successfully",
+            "rating_id": rating_id
+        }), 201
+        
+    except Exception as e:
+        logging.exception("Error submitting rating")
+        return jsonify({
+            "success": False,
+            "error": "Failed to submit rating"
+        }), 500
+
+
+# ---------------------------
+# Get Patient's Ratings API
+# ---------------------------
+@patient_bp.route("/api/patient/ratings", methods=["GET"])
+@jwt_required()
+def get_patient_ratings():
+    """Get all ratings submitted by the patient"""
+    try:
+        patient_id = get_jwt_identity()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT 
+                r.id, r.rating, r.review, r.created_at,
+                a.appointment_datetime, a.reason,
+                d.full_name as doctor_name, d.specialty
+            FROM ratings r
+            JOIN appointments a ON r.appointment_id = a.id
+            JOIN doctors d ON r.doctor_id = d.id
+            WHERE r.patient_id = %s
+            ORDER BY r.created_at DESC
+        """, (patient_id,))
+        
+        ratings = cursor.fetchall()
+        
+        # Format datetime objects
+        for rating in ratings:
+            if rating.get('created_at'):
+                if hasattr(rating['created_at'], 'isoformat'):
+                    rating['created_at'] = rating['created_at'].isoformat()
+            if rating.get('appointment_datetime'):
+                if hasattr(rating['appointment_datetime'], 'isoformat'):
+                    rating['appointment_datetime'] = rating['appointment_datetime'].isoformat()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "ratings": ratings
+        }), 200
+        
+    except Exception as e:
+        logging.exception("Error fetching patient ratings")
+        return jsonify({"error": "Failed to fetch ratings"}), 500
