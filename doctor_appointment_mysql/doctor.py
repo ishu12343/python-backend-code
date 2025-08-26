@@ -590,3 +590,220 @@ def get_appointment_stats():
             "error": "Failed to fetch appointment stats",
             "details": str(e)
         }), 500
+
+
+@doctor_bp.route("/patients", methods=["GET"])
+@jwt_required()
+def get_patients():
+    """Get all patient appointments with patient details for the logged-in doctor"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get all appointments with patient details - each appointment creates a separate patient entry
+        patients_query = """
+            SELECT 
+                a.id as appointment_id,
+                a.appointment_datetime,
+                a.reason,
+                a.status as appointment_status,
+                a.created_at as appointment_created_at,
+                p.id as patient_id,
+                p.full_name,
+                p.email,
+                p.mobile,
+                p.gender,
+                p.date_of_birth,
+                p.blood_group,
+                p.address,
+                p.city,
+                p.state,
+                p.zip,
+                p.country,
+                p.allergies,
+                p.conditions,
+                p.medications,
+                p.surgeries,
+                p.emergency_contact_name,
+                p.emergency_contact_number,
+                p.is_active,
+                p.created_at as patient_created_at,
+                -- Get total counts for this patient across all appointments
+                (SELECT COUNT(*) FROM appointments a2 WHERE a2.patient_id = p.id AND a2.doctor_id = %s AND a2.status = 'PENDING') as total_pending,
+                (SELECT COUNT(*) FROM appointments a2 WHERE a2.patient_id = p.id AND a2.doctor_id = %s AND a2.status = 'CONFIRMED') as total_confirmed,
+                (SELECT COUNT(*) FROM appointments a2 WHERE a2.patient_id = p.id AND a2.doctor_id = %s AND a2.status = 'COMPLETED') as total_completed,
+                (SELECT COUNT(*) FROM appointments a2 WHERE a2.patient_id = p.id AND a2.doctor_id = %s AND a2.status = 'CANCELLED') as total_cancelled,
+                (SELECT COUNT(*) FROM appointments a2 WHERE a2.patient_id = p.id AND a2.doctor_id = %s) as total_appointments
+            FROM appointments a
+            INNER JOIN patient p ON a.patient_id = p.id
+            WHERE a.doctor_id = %s
+            ORDER BY a.status ASC, a.appointment_datetime DESC, p.full_name ASC
+        """
+        
+        cursor.execute(patients_query, (doctor_id, doctor_id, doctor_id, doctor_id, doctor_id, doctor_id))
+        patient_appointments = cursor.fetchall()
+        
+        # Convert datetime objects to strings and format data
+        for entry in patient_appointments:
+            if entry.get('date_of_birth'):
+                if isinstance(entry['date_of_birth'], datetime.date):
+                    entry['date_of_birth'] = entry['date_of_birth'].isoformat()
+            
+            if entry.get('patient_created_at'):
+                if hasattr(entry['patient_created_at'], 'isoformat'):
+                    entry['patient_created_at'] = entry['patient_created_at'].isoformat()
+                    
+            if entry.get('appointment_created_at'):
+                if hasattr(entry['appointment_created_at'], 'isoformat'):
+                    entry['appointment_created_at'] = entry['appointment_created_at'].isoformat()
+                    
+            if entry.get('appointment_datetime'):
+                if hasattr(entry['appointment_datetime'], 'isoformat'):
+                    entry['appointment_datetime'] = entry['appointment_datetime'].isoformat()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "patients": patient_appointments,
+            "count": len(patient_appointments)
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to fetch patients",
+            "details": str(e)
+        }), 500
+
+@doctor_bp.route("/recent-activities", methods=["GET"])
+@jwt_required()
+def get_recent_activities():
+    """Get recent patient activities for the logged-in doctor"""
+    try:
+        doctor_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Get recent appointments (last 7 days) with patient details
+        recent_appointments_query = """
+            SELECT 
+                a.id as activity_id,
+                'appointment' as activity_type,
+                a.status,
+                a.appointment_datetime,
+                a.reason,
+                a.created_at,
+                p.id as patient_id,
+                p.full_name as patient_name,
+                p.email as patient_email,
+                p.mobile as patient_mobile,
+                'appointment_status_change' as action_type
+            FROM appointments a
+            INNER JOIN patient p ON a.patient_id = p.id
+            WHERE a.doctor_id = %s 
+            AND a.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            ORDER BY a.created_at DESC
+            LIMIT 10
+        """
+        
+        cursor.execute(recent_appointments_query, (doctor_id,))
+        appointment_activities = cursor.fetchall()
+
+        # Get recently registered patients who have appointments with this doctor
+        recent_patients_query = """
+            SELECT DISTINCT
+                p.id as activity_id,
+                'patient' as activity_type,
+                'new_patient' as action_type,
+                p.full_name as patient_name,
+                p.email as patient_email,
+                p.mobile as patient_mobile,
+                p.created_at,
+                '' as status,
+                '' as reason,
+                '' as appointment_datetime
+            FROM patient p
+            INNER JOIN appointments a ON p.id = a.patient_id
+            WHERE a.doctor_id = %s 
+            AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            ORDER BY p.created_at DESC
+            LIMIT 5
+        """
+        
+        cursor.execute(recent_patients_query, (doctor_id,))
+        patient_activities = cursor.fetchall()
+
+        # Combine and sort all activities
+        all_activities = []
+        
+        # Process appointment activities
+        for activity in appointment_activities:
+            activity_time = activity.get('created_at')
+            
+            description = f"New appointment booked for {activity['reason']}"
+            title = "Appointment Booked"
+            
+            all_activities.append({
+                'id': f"appointment_{activity['activity_id']}",
+                'type': 'appointment',
+                'title': title,
+                'description': f"{activity['patient_name']} - {description}",
+                'patient_name': activity['patient_name'],
+                'patient_email': activity['patient_email'],
+                'status': activity['status'],
+                'time': activity_time,
+                'appointment_datetime': activity.get('appointment_datetime'),
+                'reason': activity.get('reason')
+            })
+
+        # Process patient activities
+        for activity in patient_activities:
+            all_activities.append({
+                'id': f"patient_{activity['activity_id']}",
+                'type': 'patient',
+                'title': 'New Patient Registered',
+                'description': f"{activity['patient_name']} joined your practice",
+                'patient_name': activity['patient_name'],
+                'patient_email': activity['patient_email'],
+                'status': 'new',
+                'time': activity['created_at'],
+                'appointment_datetime': None,
+                'reason': None
+            })
+
+        # Sort by time (most recent first)
+        all_activities.sort(key=lambda x: x['time'], reverse=True)
+        
+        # Take only the most recent 10 activities
+        recent_activities = all_activities[:10]
+        
+        # Format datetime objects to strings
+        for activity in recent_activities:
+            if activity.get('time'):
+                if hasattr(activity['time'], 'isoformat'):
+                    activity['time'] = activity['time'].isoformat()
+                    
+            if activity.get('appointment_datetime'):
+                if hasattr(activity['appointment_datetime'], 'isoformat'):
+                    activity['appointment_datetime'] = activity['appointment_datetime'].isoformat()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "activities": recent_activities,
+            "count": len(recent_activities)
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": "Failed to fetch recent activities",
+            "details": str(e)
+        }), 500
