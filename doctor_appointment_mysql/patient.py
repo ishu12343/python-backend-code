@@ -319,6 +319,7 @@ def list_available_doctors():
         specialty = request.args.get("specialty")
         city = request.args.get("city")
         search = request.args.get("search")
+        doctor_id = request.args.get("doctor_id")
         
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -337,18 +338,22 @@ def list_available_doctors():
         """
         params = []
         
-        # Add filters
-        if specialty:
-            query += " AND d.specialty LIKE %s"
-            params.append(f"%{specialty}%")
-        
-        if city:
-            query += " AND d.city LIKE %s"
-            params.append(f"%{city}%")
+        if doctor_id:
+            query += " AND d.id = %s"
+            params.append(doctor_id)
+        else:
+            # Add list filters
+            if specialty:
+                query += " AND d.specialty LIKE %s"
+                params.append(f"%{specialty}%")
             
-        if search:
-            query += " AND (d.full_name LIKE %s OR d.specialty LIKE %s)"
-            params.extend([f"%{search}%", f"%{search}%"])
+            if city:
+                query += " AND d.city LIKE %s"
+                params.append(f"%{city}%")
+                
+            if search:
+                query += " AND (d.full_name LIKE %s OR d.specialty LIKE %s)"
+                params.extend([f"%{search}%", f"%{search}%"])
         
         query += " GROUP BY d.id ORDER BY d.full_name"
         
