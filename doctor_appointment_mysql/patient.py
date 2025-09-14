@@ -312,7 +312,7 @@ def patient_logout():
 # List Available Doctors API
 # ---------------------------
 @patient_bp.route("/api/patient/doctors", methods=["GET"])
-@jwt_required()
+# @jwt_required()
 def list_available_doctors():
     try:
         # Get query parameters for filtering
@@ -377,8 +377,15 @@ def list_available_doctors():
                 if hasattr(doctor['experience'], 'total_seconds'):
                     total_seconds = int(doctor['experience'].total_seconds())
                     years = total_seconds // (365 * 24 * 3600)
-                    doctor['experience'] = f"{years} years"
+                    # Return experience as an integer for consistent frontend handling
+                    doctor['experience'] = years
             
+            # Convert languages string to a list
+            if doctor.get('languages') and isinstance(doctor['languages'], str):
+                doctor['languages'] = [lang.strip() for lang in doctor['languages'].split(',') if lang.strip()]
+            elif not doctor.get('languages'):
+                doctor['languages'] = []
+
             # Format rating information
             if doctor.get('average_rating'):
                 doctor['average_rating'] = round(float(doctor['average_rating']), 1)
