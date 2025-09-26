@@ -95,7 +95,7 @@ def admin_login():
 def list_doctors():
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, full_name, email, approved, suspended, documents_verified FROM doctors")
+    cur.execute("SELECT id, full_name, email, approved, suspended, specialty, documents_verified FROM doctors")
     doctors = cur.fetchall()
     conn.close()
     return jsonify(doctors), 200
@@ -248,7 +248,7 @@ def unsuspend_doctor(doc_id):
 def list_patients():
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT id, full_name, email, mobile, is_active FROM patient")
+    cur.execute("SELECT id, full_name, email, mobile, role, gender, is_active FROM patient")
     patients = cur.fetchall()
     conn.close()
     return jsonify(patients), 200
