@@ -813,3 +813,32 @@ def get_patient_ratings():
     except Exception as e:
         logging.exception("Error fetching patient ratings")
         return jsonify({"error": "Failed to fetch ratings"}), 500
+
+
+# ---------------------------
+# List All Patients API (Public)
+# ---------------------------
+@patient_bp.route("/api/patient/patient-list", methods=["GET"])
+def list_all_patients():
+    """
+    Provides a public list of all patients, primarily for stats like total patient count.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("SELECT id, full_name, created_at FROM patient WHERE is_active = 1")
+        patients = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "success": True,
+            "patients": patients,
+            "count": len(patients)
+        }), 200
+
+    except Exception as e:
+        logging.exception("Error fetching all patients")
+        return jsonify({"error": "Failed to fetch patient list"}), 500
