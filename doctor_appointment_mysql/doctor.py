@@ -219,6 +219,9 @@ def update_profile():
     try:
         doctor_id = int(get_jwt_identity())
         data = request.get_json()
+        
+        print(f"Updating profile for doctor_id: {doctor_id}")
+        print(f"Received data keys: {list(data.keys())}")
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -234,9 +237,11 @@ def update_profile():
         values = []
 
         for field in fields:
-            if field in data:
+            if field in data and data[field] is not None:
                 updates.append(f"{field} = %s")
                 values.append(data[field])
+                if field == "profile_photo" and data[field]:
+                    print(f"Profile photo data length: {len(str(data[field]))}")
 
         if not updates:
             return jsonify({"error": "No fields to update"}), 400
@@ -247,14 +252,20 @@ def update_profile():
             UPDATE doctors SET {', '.join(updates)}, updated_at = NOW()
             WHERE id = %s
         """
+        
+        print(f"Executing query with {len(updates)} updates")
         cursor.execute(query, tuple(values))
         conn.commit()
+        
+        print(f"Profile updated successfully for doctor_id: {doctor_id}")
+        
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Profile updated successfully"}), 200
 
     except Exception as e:
+        print(f"Error in update_profile: {str(e)}")
         traceback.print_exc()
         return jsonify({"error": "Profile update failed", "details": str(e)}), 500
 
