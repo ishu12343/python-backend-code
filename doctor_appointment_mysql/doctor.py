@@ -499,11 +499,42 @@ def reschedule_appointment(appointment_id):
         doctor_id = get_jwt_identity()
         data = request.get_json()
         
+        print(f"Reschedule request for appointment {appointment_id} by doctor {doctor_id}")
+        print(f"Request data: {data}")
+        
         # Validate required fields
-        if not data.get('new_date') or not data.get('new_time'):
+        if not data or not data.get('new_date') or not data.get('new_time'):
             return jsonify({
                 "success": False,
                 "error": "New date and time are required"
+            }), 400
+        
+        # Validate date and time format
+        try:
+            from datetime import datetime
+            new_date = data['new_date']
+            new_time = data['new_time']
+            
+            # Validate date format (YYYY-MM-DD)
+            datetime.strptime(new_date, '%Y-%m-%d')
+            
+            # Validate time format (HH:MM)
+            datetime.strptime(new_time, '%H:%M')
+            
+            # Check if the new datetime is in the future
+            new_datetime_str = f"{new_date} {new_time}:00"
+            new_datetime = datetime.strptime(new_datetime_str, '%Y-%m-%d %H:%M:%S')
+            
+            if new_datetime <= datetime.now():
+                return jsonify({
+                    "success": False,
+                    "error": "New appointment time must be in the future"
+                }), 400
+                
+        except ValueError as e:
+            return jsonify({
+                "success": False,
+                "error": f"Invalid date or time format: {str(e)}"
             }), 400
         
         conn = get_db_connection()
@@ -511,37 +542,42 @@ def reschedule_appointment(appointment_id):
 
         # First verify the appointment belongs to this doctor
         verify_query = """
-            SELECT id, status FROM appointments 
+            SELECT id, status, appointment_datetime FROM appointments 
             WHERE id = %s AND doctor_id = %s
         """
         cursor.execute(verify_query, (appointment_id, doctor_id))
         appointment = cursor.fetchone()
         
         if not appointment:
+            cursor.close()
+            conn.close()
             return jsonify({
                 "success": False,
                 "error": "Appointment not found or unauthorized"
             }), 404
             
-        if appointment['status'] not in ['PENDING', 'CONFIRMED']:
+        if appointment['status'] not in ['PENDING', 'CONFIRMED', 'COMPLETED', 'CANCELLED']:
+            cursor.close()
+            conn.close()
             return jsonify({
                 "success": False,
-                "error": "Only pending or confirmed appointments can be rescheduled"
+                "error": "Appointment cannot be rescheduled"
             }), 400
 
         # Combine new date and time
-        new_datetime = f"{data['new_date']} {data['new_time']}:00"
+        new_datetime_final = f"{data['new_date']} {data['new_time']}:00"
         
         # Update appointment with new datetime
         update_query = """
             UPDATE appointments 
             SET appointment_datetime = %s, 
-                status = 'CONFIRMED',
-                updated_at = NOW()
+                status = 'CONFIRMED'
             WHERE id = %s
         """
-        cursor.execute(update_query, (new_datetime, appointment_id))
+        cursor.execute(update_query, (new_datetime_final, appointment_id))
         conn.commit()
+        
+        print(f"Appointment {appointment_id} rescheduled to {new_datetime_final}")
         
         cursor.close()
         conn.close()
@@ -549,7 +585,8 @@ def reschedule_appointment(appointment_id):
         return jsonify({
             "success": True,
             "message": "Appointment rescheduled successfully",
-            "new_datetime": new_datetime
+            "new_datetime": new_datetime_final,
+            "appointment_id": appointment_id
         }), 200
         
     except Exception as e:
