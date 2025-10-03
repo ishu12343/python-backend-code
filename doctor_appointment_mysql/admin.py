@@ -297,6 +297,84 @@ def activate_patient(pat_id):
     return jsonify(message="Patient activated"), 200
 
 
+# --- Delete Doctor ---
+@admin_bp.route("/admin/doctors/<int:doc_id>/delete", methods=["DELETE"])
+@jwt_required()
+def delete_doctor(doc_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Check if doctor exists
+        cur.execute("SELECT id, full_name FROM doctors WHERE id = %s", (doc_id,))
+        doctor = cur.fetchone()
+        
+        if not doctor:
+            conn.close()
+            return jsonify(error="Doctor not found"), 404
+        
+        # Delete related data first to maintain referential integrity
+        # Delete appointments
+        cur.execute("DELETE FROM appointments WHERE doctor_id = %s", (doc_id,))
+        
+        # Delete doctor
+        cur.execute("DELETE FROM doctors WHERE id = %s", (doc_id,))
+        
+        if cur.rowcount == 0:
+            conn.rollback()
+            conn.close()
+            return jsonify(error="Failed to delete doctor"), 500
+        
+        conn.commit()
+        conn.close()
+        return jsonify(message="Doctor deleted successfully"), 200
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify(error="Failed to delete doctor", details=str(e)), 500
+
+
+# --- Delete Patient ---
+@admin_bp.route("/admin/patients/<int:pat_id>/delete", methods=["DELETE"])
+@jwt_required()
+def delete_patient(pat_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Check if patient exists
+        cur.execute("SELECT id, full_name FROM patient WHERE id = %s", (pat_id,))
+        patient = cur.fetchone()
+        
+        if not patient:
+            conn.close()
+            return jsonify(error="Patient not found"), 404
+        
+        # Delete related data first to maintain referential integrity
+        # Delete appointments
+        cur.execute("DELETE FROM appointments WHERE patient_id = %s", (pat_id,))
+        
+        # Delete patient
+        cur.execute("DELETE FROM patient WHERE id = %s", (pat_id,))
+        
+        if cur.rowcount == 0:
+            conn.rollback()
+            conn.close()
+            return jsonify(error="Failed to delete patient"), 500
+        
+        conn.commit()
+        conn.close()
+        return jsonify(message="Patient deleted successfully"), 200
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify(error="Failed to delete patient", details=str(e)), 500
+
+
 # --- Admin Profile ---
 @admin_bp.route("/admin/profile", methods=["GET"])
 @jwt_required()
