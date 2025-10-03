@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import (
-    JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
+    create_access_token, jwt_required, get_jwt_identity, get_jwt
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from db import get_db_connection
@@ -33,13 +33,17 @@ def admin_signup():
 
     try:
         cur.execute(
-            "INSERT INTO admin (full_name, email, password, role, is_active) VALUES (%s, %s, %s, %s, TRUE)",
+            "INSERT INTO admin (full_name, email, password, role, is_active, created_at) VALUES (%s, %s, %s, %s, TRUE, NOW())",
             (full_name, email, hashed_password, role),
         )
         conn.commit()
 
         # Get the newly created admin
-        cur.execute("SELECT * FROM admin WHERE email=%s", (email,))
+        cur.execute("""
+            SELECT id, full_name, email, role, profile_photo, created_at 
+            FROM admin 
+            WHERE email = %s
+        """, (email,))
         admin = cur.fetchone()
 
         token = create_access_token(identity=str(admin["id"]))
@@ -49,9 +53,11 @@ def admin_signup():
             token=token,
             admin={
                 "id": admin["id"],
-                "name": admin["full_name"],
+                "full_name": admin["full_name"],
+                "username": admin["full_name"],
                 "email": admin["email"],
-                "role": admin["role"]
+                "role": admin["role"],
+                "profile_photo": admin["profile_photo"]
             }
         ), 201
 
@@ -69,23 +75,38 @@ def admin_login():
     email = data.get("email")
     pwd = data.get("password")
 
+    if not email or not pwd:
+        return jsonify(error="Email and password are required"), 400
+
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute("SELECT * FROM admin WHERE email=%s", (email,))
+    cur.execute("""
+        SELECT id, full_name, email, password, role, profile_photo, is_active 
+        FROM admin 
+        WHERE email = %s
+    """, (email,))
     user = cur.fetchone()
-    conn.close()
-
+    
     if user and user["is_active"] and check_password_hash(user["password"], pwd):
+        # Update last_login timestamp
+        cur.execute("UPDATE admin SET last_login = NOW() WHERE id = %s", (user["id"],))
+        conn.commit()
+        conn.close()
+        
         token = create_access_token(identity=str(user["id"]))
         return jsonify(
             token=token,
             admin={
                 "id": user["id"],
-                "name": user["full_name"],
+                "full_name": user["full_name"],
+                "username": user["full_name"],  # For header compatibility
                 "email": user["email"],
-                "role": user["role"]
+                "role": user["role"],
+                "profile_photo": user["profile_photo"]
             }
         ), 200
+    
+    conn.close()
     return jsonify(error="Invalid credentials or inactive account"), 401
 
 
@@ -275,6 +296,95 @@ def activate_patient(pat_id):
     conn.close()
     return jsonify(message="Patient activated"), 200
 
+
+# --- Admin Profile ---
+@admin_bp.route("/admin/profile", methods=["GET"])
+@jwt_required()
+def get_admin_profile():
+    try:
+        admin_id = get_jwt_identity()
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT id, full_name, email, role, profile_photo, 
+                   created_at, last_login
+            FROM admin 
+            WHERE id = %s AND is_active = TRUE
+        """, (admin_id,))
+        admin = cur.fetchone()
+        conn.close()
+        
+        if not admin:
+            return jsonify(error="Admin not found"), 404
+            
+        return jsonify(admin), 200
+    except Exception as e:
+        return jsonify(error="Failed to fetch admin profile", details=str(e)), 500
+
+# --- Update Admin Profile ---
+@admin_bp.route("/admin/profile/update", methods=["PUT"])
+@jwt_required()
+def update_admin_profile():
+    try:
+        admin_id = get_jwt_identity()
+        data = request.get_json()
+        
+        if not data:
+            return jsonify(error="No data provided"), 400
+        
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Define updatable fields
+        updatable_fields = ["full_name", "email", "profile_photo"]
+        
+        update_fields = []
+        update_values = []
+        
+        for field in updatable_fields:
+            if field in data and data[field] is not None:
+                update_fields.append(f"{field} = %s")
+                update_values.append(data[field])
+        
+        if not update_fields:
+            conn.close()
+            return jsonify(error="No valid fields to update"), 400
+        
+        # Add admin_id to values for WHERE clause
+        update_values.append(admin_id)
+        
+        # Build and execute update query
+        query = f"UPDATE admin SET {', '.join(update_fields)} WHERE id = %s AND is_active = TRUE"
+        cur.execute(query, update_values)
+        
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify(error="Admin not found or no changes made"), 404
+        
+        conn.commit()
+        
+        # Fetch updated admin data
+        cur.execute("""
+            SELECT id, full_name, email, role, profile_photo, created_at, last_login
+            FROM admin 
+            WHERE id = %s AND is_active = TRUE
+        """, (admin_id,))
+        updated_admin = cur.fetchone()
+        conn.close()
+        
+        if not updated_admin:
+            return jsonify(error="Failed to fetch updated admin data"), 500
+        
+        return jsonify(
+            message="Admin profile updated successfully",
+            admin=updated_admin
+        ), 200
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify(error="Failed to update admin profile", details=str(e)), 500
 
 @admin_bp.route("/api/admin/logout", methods=["POST"])
 @jwt_required()
