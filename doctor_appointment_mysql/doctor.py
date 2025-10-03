@@ -792,14 +792,24 @@ def get_recent_activities():
         for activity in appointment_activities:
             activity_time = activity.get('created_at')
             
-            description = f"New appointment booked for {activity['reason']}"
-            title = "Appointment Booked"
+            # Create dynamic title based on status
+            status_titles = {
+                'PENDING': 'New Appointment Request',
+                'CONFIRMED': 'Appointment Confirmed', 
+                'COMPLETED': 'Appointment Completed',
+                'CANCELLED': 'Appointment Cancelled'
+            }
+            title = status_titles.get(activity['status'], 'Appointment Update')
+            
+            description = f"{activity['patient_name']} - {activity['reason'] or 'General consultation'}"
             
             all_activities.append({
                 'id': f"appointment_{activity['activity_id']}",
+                'appointment_id': activity['activity_id'],  # Real appointment ID for navigation
+                'patient_id': activity['patient_id'],       # Real patient ID for navigation
                 'type': 'appointment',
                 'title': title,
-                'description': f"{activity['patient_name']} - {description}",
+                'description': description,
                 'patient_name': activity['patient_name'],
                 'patient_email': activity['patient_email'],
                 'status': activity['status'],
@@ -812,6 +822,7 @@ def get_recent_activities():
         for activity in patient_activities:
             all_activities.append({
                 'id': f"patient_{activity['activity_id']}",
+                'patient_id': activity['activity_id'],     # Real patient ID for navigation
                 'type': 'patient',
                 'title': 'New Patient Registered',
                 'description': f"{activity['patient_name']} joined your practice",
