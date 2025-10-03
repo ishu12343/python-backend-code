@@ -306,22 +306,17 @@ def delete_doctor(doc_id):
         cur = conn.cursor()
         
         # Check if doctor exists
-        cur.execute("SELECT id, full_name FROM doctors WHERE id = %s", (doc_id,))
+        cur.execute("SELECT id FROM doctors WHERE id = %s", (doc_id,))
         doctor = cur.fetchone()
         
         if not doctor:
             conn.close()
             return jsonify(error="Doctor not found"), 404
         
-        # Delete related data first to maintain referential integrity
-        # Delete appointments
-        cur.execute("DELETE FROM appointments WHERE doctor_id = %s", (doc_id,))
-        
-        # Delete doctor
+        # Delete the doctor (this will cascade to related records if foreign keys are set up)
         cur.execute("DELETE FROM doctors WHERE id = %s", (doc_id,))
         
         if cur.rowcount == 0:
-            conn.rollback()
             conn.close()
             return jsonify(error="Failed to delete doctor"), 500
         
@@ -345,22 +340,17 @@ def delete_patient(pat_id):
         cur = conn.cursor()
         
         # Check if patient exists
-        cur.execute("SELECT id, full_name FROM patient WHERE id = %s", (pat_id,))
+        cur.execute("SELECT id FROM patient WHERE id = %s", (pat_id,))
         patient = cur.fetchone()
         
         if not patient:
             conn.close()
             return jsonify(error="Patient not found"), 404
         
-        # Delete related data first to maintain referential integrity
-        # Delete appointments
-        cur.execute("DELETE FROM appointments WHERE patient_id = %s", (pat_id,))
-        
-        # Delete patient
+        # Delete the patient (this will cascade to related records if foreign keys are set up)
         cur.execute("DELETE FROM patient WHERE id = %s", (pat_id,))
         
         if cur.rowcount == 0:
-            conn.rollback()
             conn.close()
             return jsonify(error="Failed to delete patient"), 500
         
