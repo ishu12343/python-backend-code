@@ -16,6 +16,59 @@ patient_bp = Blueprint("patient", __name__)
 CORS(patient_bp)
 
 # ---------------------------
+# Database Schema Helper
+# ---------------------------
+def ensure_photo_column_size():
+    """Ensure photo_path column can handle base64 image data"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check current column type
+        cursor.execute("""
+            SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = 'doctorapp' 
+            AND TABLE_NAME = 'patient' 
+            AND COLUMN_NAME = 'photo_path'
+        """)
+        result = cursor.fetchone()
+        
+        if result and result[0] != 'longtext':
+            logging.info("Updating photo_path column to handle base64 images...")
+            cursor.execute("ALTER TABLE patient MODIFY COLUMN photo_path LONGTEXT")
+            conn.commit()
+            logging.info("Photo column updated successfully")
+        
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        logging.warning(f"Could not update photo column: {e}")
+        # Continue without failing - the column might already be correct
+
+# ---------------------------
+# Photo Processing Helper
+# ---------------------------
+def validate_and_process_photo(photo_data):
+    """Validate and process base64 photo data"""
+    if not photo_data:
+        return None
+        
+    # Check if it's a valid base64 image
+    if not photo_data.startswith('data:image/'):
+        logging.warning("Invalid photo format - not a base64 image")
+        return None
+    
+    # Check size (limit to ~2MB base64 which is ~1.5MB actual image)
+    max_size = 2 * 1024 * 1024  # 2MB
+    if len(photo_data) > max_size:
+        logging.warning(f"Photo too large: {len(photo_data)} bytes")
+        raise ValueError("Photo size too large. Please use a smaller image.")
+    
+    return photo_data
+
+# ---------------------------
 # Register API
 # ---------------------------
 @patient_bp.route("/api/patient/register", methods=["POST"])
@@ -222,21 +275,36 @@ def get_profile():
 def update_patient_profile():
     try:
         patient_id = get_jwt_identity()
-        data = request.form  # handles multipart/form-data
+        data = request.get_json()  # handles JSON data like doctor profile
+        
+        # Debug logging
+        logging.info(f"Patient ID: {patient_id}")
+        logging.info(f"Request data: {data}")
 
         if not data:
             return jsonify({"error": "Missing or invalid JSON payload"}), 400
 
+        # Ensure database can handle photo data
+        ensure_photo_column_size()
+        
+        # Process photo data if provided
+        photo_data = None
+        if data.get("photo_path"):
+            try:
+                photo_data = validate_and_process_photo(data.get("photo_path"))
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+        
         # Fields you want to allow updating
         allowed_fields = {
-            "full_name": data.get("fullName"),
+            "full_name": data.get("full_name"),
             "mobile": data.get("mobile"),
             "gender": data.get("gender"),
-            "date_of_birth": data.get("dateOfBirth"),
-            "blood_group": data.get("bloodGroup"),
+            "date_of_birth": data.get("dob"),  # frontend sends 'dob'
+            "blood_group": data.get("blood_group"),
             "address": data.get("address"),
-            "emergency_contact": data.get("emergencyContact"),
-            "photo_path": data.get("photoPath"),
+            "emergency_contact": data.get("emergency_contact"),
+            "photo_path": photo_data,
             "city": data.get("city"),
             "state": data.get("state"),
             "zip": data.get("zip"),
@@ -245,10 +313,12 @@ def update_patient_profile():
             "conditions": data.get("conditions"),
             "medications": data.get("medications"),
             "surgeries": data.get("surgeries"),
-            "emergency_contact_name": data.get("emergencyContactName"),
-            "emergency_contact_number": data.get("emergencyContactNumber"),
-            "document_path": data.get("documentPath")
+            "emergency_contact_name": data.get("emergency_contact_name"),
+            "emergency_contact_number": data.get("emergency_contact_number"),
+            "document_path": data.get("document_path")
         }
+
+
 
         fields = []
         values = []
@@ -257,6 +327,9 @@ def update_patient_profile():
             if value is not None:
                 fields.append(f"{field} = %s")
                 values.append(value)
+                # Add debug logging for photo
+                if field == "photo_path" and value:
+                    logging.info(f"Photo data length: {len(str(value))}")
 
         if not fields:
             return jsonify({"error": "No fields to update"}), 400
@@ -279,17 +352,25 @@ def update_patient_profile():
             WHERE id = %s
         """
 
+        logging.info(f"Final query: {query}")
+        logging.info(f"Final values: {values}")
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(query, values)
         conn.commit()
+        
+        # Check how many rows were affected
+        rows_affected = cursor.rowcount
+        logging.info(f"Rows affected: {rows_affected}")
+        
         conn.close()
 
         return jsonify({"message": "✅ Patient profile updated successfully"}), 200
 
     except Exception as e:
-        logging.exception("Error updating patient profile")
-        return jsonify({"error": "Something went wrong. Try again later."}), 500
+        logging.exception(f"Error updating patient profile: {str(e)}")
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 
 # ---------------------------
