@@ -32,10 +32,12 @@ def check_if_token_revoked(jwt_header, jwt_payload):
 from doctor import doctor_bp
 from patient import patient_bp
 from admin import admin_bp
+from forgot_password import forgot_password_bp
 
 app.register_blueprint(doctor_bp)
 app.register_blueprint(patient_bp)
 app.register_blueprint(admin_bp)
+app.register_blueprint(forgot_password_bp)
 
 # ✅ Test route
 @app.route("/ping")
