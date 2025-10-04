@@ -4,14 +4,168 @@ import bcrypt
 import datetime
 import os
 import traceback
+import random
+import re
 from flask_jwt_extended import (
     jwt_required, create_access_token,
     get_jwt_identity, unset_jwt_cookies
 )
 
+# Simple OTP storage (in production, use Redis or database)
+otp_storage = {}
+
 SECRET_KEY = os.environ.get("SECRET_KEY", "your_dev_secret")
 
 doctor_bp = Blueprint("doctor", __name__, url_prefix="/api/doctor")
+
+
+# ===== FORGOT PASSWORD ENDPOINTS =====
+
+@doctor_bp.route("/forgot-password/send-otp", methods=["POST"])
+def send_otp():
+    """Send OTP for password reset"""
+    data = request.get_json()
+    identifier = data.get("identifier", "").strip()
+    
+    if not identifier:
+        return jsonify({"success": False, "error": "Email or mobile number is required"}), 400
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if it's email or mobile
+        is_email = "@" in identifier
+        
+        if is_email:
+            # Validate email format
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            if not re.match(email_pattern, identifier):
+                return jsonify({"success": False, "error": "Invalid email format"}), 400
+            
+            cursor.execute("SELECT id, email, full_name FROM doctors WHERE email = %s AND status = 'approved'", (identifier,))
+            identifier_type = "email"
+        else:
+            # Validate mobile format (assuming 10 digits)
+            mobile_pattern = r'^[+]?[0-9]{10,15}$'
+            if not re.match(mobile_pattern, identifier.replace("-", "").replace(" ", "")):
+                return jsonify({"success": False, "error": "Invalid mobile number format"}), 400
+            
+            cursor.execute("SELECT id, mobile, full_name FROM doctors WHERE mobile = %s AND status = 'approved'", (identifier,))
+            identifier_type = "mobile"
+        
+        doctor = cursor.fetchone()
+        
+        if not doctor:
+            return jsonify({"success": False, "error": "Doctor not found or not approved"}), 404
+        
+        # Generate 6-digit OTP
+        otp = str(random.randint(100000, 999999))
+        
+        # Store OTP with expiration (10 minutes)
+        otp_key = f"doctor_{doctor['id']}"
+        otp_storage[otp_key] = {
+            "otp": otp,
+            "expires": datetime.datetime.now() + datetime.timedelta(minutes=10),
+            "identifier": identifier,
+            "type": identifier_type
+        }
+        
+        # In production, send OTP via SMS/Email service
+        # For now, we'll just return success (OTP will be visible in logs for testing)
+        print(f"OTP for doctor {doctor['full_name']}: {otp}")  # Remove in production
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"OTP sent to your {identifier_type}",
+            "identifier_type": identifier_type,
+            "otp": otp  # Remove this in production
+        }), 200
+        
+    except Exception as e:
+        print(f"Send OTP error: {str(e)}")
+        return jsonify({"success": False, "error": "Failed to send OTP"}), 500
+
+
+@doctor_bp.route("/forgot-password/reset", methods=["POST"])
+def reset_password():
+    """Reset password using OTP"""
+    data = request.get_json()
+    identifier = data.get("identifier", "").strip()
+    otp = data.get("otp", "").strip()
+    new_password = data.get("new_password", "")
+    confirm_password = data.get("confirm_password", "")
+    
+    if not all([identifier, otp, new_password, confirm_password]):
+        return jsonify({"success": False, "error": "All fields are required"}), 400
+    
+    if new_password != confirm_password:
+        return jsonify({"success": False, "error": "Passwords do not match"}), 400
+    
+    if len(new_password) < 6:
+        return jsonify({"success": False, "error": "Password must be at least 6 characters long"}), 400
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Find doctor by identifier
+        is_email = "@" in identifier
+        
+        if is_email:
+            cursor.execute("SELECT id, email, full_name FROM doctors WHERE email = %s AND status = 'approved'", (identifier,))
+        else:
+            cursor.execute("SELECT id, mobile, full_name FROM doctors WHERE mobile = %s AND status = 'approved'", (identifier,))
+        
+        doctor = cursor.fetchone()
+        
+        if not doctor:
+            return jsonify({"success": False, "error": "Doctor not found"}), 404
+        
+        # Verify OTP
+        otp_key = f"doctor_{doctor['id']}"
+        stored_otp_data = otp_storage.get(otp_key)
+        
+        if not stored_otp_data:
+            return jsonify({"success": False, "error": "OTP not found or expired"}), 400
+        
+        if datetime.datetime.now() > stored_otp_data["expires"]:
+            del otp_storage[otp_key]
+            return jsonify({"success": False, "error": "OTP has expired"}), 400
+        
+        if stored_otp_data["otp"] != otp:
+            return jsonify({"success": False, "error": "Invalid OTP"}), 400
+        
+        if stored_otp_data["identifier"] != identifier:
+            return jsonify({"success": False, "error": "Identifier mismatch"}), 400
+        
+        # Hash new password
+        hashed_password = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt())
+        
+        # Update password
+        cursor.execute(
+            "UPDATE doctors SET password = %s, updated_at = NOW() WHERE id = %s",
+            (hashed_password.decode("utf-8"), doctor['id'])
+        )
+        conn.commit()
+        
+        # Clear OTP
+        del otp_storage[otp_key]
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Password reset successfully"
+        }), 200
+        
+    except Exception as e:
+        print(f"Reset password error: {str(e)}")
+        return jsonify({"success": False, "error": "Failed to reset password"}), 500
 
 
 # REGISTER

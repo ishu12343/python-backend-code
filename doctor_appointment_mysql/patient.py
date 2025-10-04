@@ -8,12 +8,165 @@ import bcrypt
 import datetime
 import re
 import logging
+import random
+
+# Simple OTP storage (in production, use Redis or database)
+otp_storage = {}
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
 patient_bp = Blueprint("patient", __name__)
 CORS(patient_bp)
+
+# ===== FORGOT PASSWORD ENDPOINTS =====
+
+@patient_bp.route("/api/patient/forgot-password/send-otp", methods=["POST"])
+def send_otp():
+    """Send OTP for password reset"""
+    data = request.get_json()
+    identifier = data.get("identifier", "").strip()
+    
+    if not identifier:
+        return jsonify({"success": False, "error": "Email or mobile number is required"}), 400
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if it's email or mobile
+        is_email = "@" in identifier
+        
+        if is_email:
+            # Validate email format
+            email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            if not re.match(email_pattern, identifier):
+                return jsonify({"success": False, "error": "Invalid email format"}), 400
+            
+            cursor.execute("SELECT id, email, full_name FROM patient WHERE email = %s", (identifier,))
+            identifier_type = "email"
+        else:
+            # Validate mobile format (assuming 10 digits)
+            mobile_pattern = r'^[+]?[0-9]{10,15}$'
+            if not re.match(mobile_pattern, identifier.replace("-", "").replace(" ", "")):
+                return jsonify({"success": False, "error": "Invalid mobile number format"}), 400
+            
+            cursor.execute("SELECT id, mobile, full_name FROM patient WHERE mobile = %s", (identifier,))
+            identifier_type = "mobile"
+        
+        patient = cursor.fetchone()
+        
+        if not patient:
+            return jsonify({"success": False, "error": "Patient not found"}), 404
+        
+        # Generate 6-digit OTP
+        otp = str(random.randint(100000, 999999))
+        
+        # Store OTP with expiration (10 minutes)
+        otp_key = f"patient_{patient['id']}"
+        otp_storage[otp_key] = {
+            "otp": otp,
+            "expires": datetime.datetime.now() + datetime.timedelta(minutes=10),
+            "identifier": identifier,
+            "type": identifier_type
+        }
+        
+        # In production, send OTP via SMS/Email service
+        # For now, we'll just return success (OTP will be visible in logs for testing)
+        print(f"OTP for patient {patient['full_name']}: {otp}")  # Remove in production
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"OTP sent to your {identifier_type}",
+            "identifier_type": identifier_type,
+            "otp": otp  # Remove this in production
+        }), 200
+        
+    except Exception as e:
+        print(f"Send OTP error: {str(e)}")
+        return jsonify({"success": False, "error": "Failed to send OTP"}), 500
+
+
+@patient_bp.route("/api/patient/forgot-password/reset", methods=["POST"])
+def reset_password():
+    """Reset password using OTP"""
+    data = request.get_json()
+    identifier = data.get("identifier", "").strip()
+    otp = data.get("otp", "").strip()
+    new_password = data.get("new_password", "")
+    confirm_password = data.get("confirm_password", "")
+    
+    if not all([identifier, otp, new_password, confirm_password]):
+        return jsonify({"success": False, "error": "All fields are required"}), 400
+    
+    if new_password != confirm_password:
+        return jsonify({"success": False, "error": "Passwords do not match"}), 400
+    
+    if len(new_password) < 6:
+        return jsonify({"success": False, "error": "Password must be at least 6 characters long"}), 400
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Find patient by identifier
+        is_email = "@" in identifier
+        
+        if is_email:
+            cursor.execute("SELECT id, email, full_name FROM patient WHERE email = %s", (identifier,))
+        else:
+            cursor.execute("SELECT id, mobile, full_name FROM patient WHERE mobile = %s", (identifier,))
+        
+        patient = cursor.fetchone()
+        
+        if not patient:
+            return jsonify({"success": False, "error": "Patient not found"}), 404
+        
+        # Verify OTP
+        otp_key = f"patient_{patient['id']}"
+        stored_otp_data = otp_storage.get(otp_key)
+        
+        if not stored_otp_data:
+            return jsonify({"success": False, "error": "OTP not found or expired"}), 400
+        
+        if datetime.datetime.now() > stored_otp_data["expires"]:
+            del otp_storage[otp_key]
+            return jsonify({"success": False, "error": "OTP has expired"}), 400
+        
+        if stored_otp_data["otp"] != otp:
+            return jsonify({"success": False, "error": "Invalid OTP"}), 400
+        
+        if stored_otp_data["identifier"] != identifier:
+            return jsonify({"success": False, "error": "Identifier mismatch"}), 400
+        
+        # Hash new password
+        hashed_password = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt())
+        
+        # Update password
+        cursor.execute(
+            "UPDATE patient SET password = %s, updated_at = NOW() WHERE id = %s",
+            (hashed_password.decode("utf-8"), patient['id'])
+        )
+        conn.commit()
+        
+        # Clear OTP
+        del otp_storage[otp_key]
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Password reset successfully"
+        }), 200
+        
+    except Exception as e:
+        print(f"Reset password error: {str(e)}")
+        return jsonify({"success": False, "error": "Failed to reset password"}), 500
+
 
 # ---------------------------
 # Database Schema Helper
