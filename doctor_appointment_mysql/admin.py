@@ -15,14 +15,14 @@ admin_bp = Blueprint("admin", __name__)
 
 @admin_bp.route("/admin/forgot-password/send-otp", methods=["POST"])
 def send_otp():
-    """Send OTP for password reset - Only works with registered admin emails"""
+    """Send OTP for password reset - Works with registered admin email or mobile"""
     print("Admin forgot password send OTP endpoint called")
     data = request.get_json()
     identifier = data.get("identifier", "").strip()
     print(f"Identifier received: {identifier}")
     
     if not identifier:
-        return jsonify({"success": False, "error": "Email is required"}), 400
+        return jsonify({"success": False, "error": "Email or mobile number is required"}), 400
     
     try:
         print("Attempting database connection...")
@@ -30,17 +30,28 @@ def send_otp():
         cursor = conn.cursor(dictionary=True)
         print("Database connection successful")
         
-        # Admin only uses email (no mobile)
+        # Determine if identifier is email or mobile
         email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(email_pattern, identifier):
-            return jsonify({"success": False, "error": "Invalid email format"}), 400
+        mobile_pattern = r'^[0-9]{10}$'
         
-        # Check if admin exists and is active (registered email only)
-        cursor.execute("SELECT id, email, full_name FROM admin WHERE email = %s AND is_active = 1", (identifier,))
-        admin = cursor.fetchone()
+        admin = None
+        identifier_type = None
+        
+        if re.match(email_pattern, identifier):
+            identifier_type = "email"
+            cursor.execute("SELECT id, email, mobile, full_name FROM admin WHERE email = %s AND is_active = 1", (identifier,))
+            admin = cursor.fetchone()
+        elif re.match(mobile_pattern, identifier):
+            identifier_type = "mobile"
+            cursor.execute("SELECT id, email, mobile, full_name FROM admin WHERE mobile = %s AND is_active = 1", (identifier,))
+            admin = cursor.fetchone()
+            cursor.fetchall()  # Consume any remaining results
+        else:
+            return jsonify({"success": False, "error": "Please enter a valid email address or 10-digit mobile number"}), 400
         
         if not admin:
-            return jsonify({"success": False, "error": "No admin account found with this email address. Please use a registered email."}), 404
+            error_msg = f"No admin account found with this {identifier_type}. Please use a registered {identifier_type}."
+            return jsonify({"success": False, "error": error_msg}), 404
         
         # Generate 6-digit OTP
         otp = str(random.randint(100000, 999999))
@@ -53,17 +64,23 @@ def send_otp():
         )
         conn.commit()
         
-        # In production, send OTP via Email service
+        # In production, send OTP via Email/SMS service
         # For now, we'll just return success (OTP will be visible in logs for testing)
         print(f"OTP for admin {admin['full_name']}: {otp}")  # Remove in production
         
         cursor.close()
         conn.close()
         
+        message = f"OTP sent to your registered {identifier_type}"
+        if identifier_type == "mobile":
+            message = "OTP sent to your registered mobile"
+        else:
+            message = "OTP sent to your registered email address"
+        
         return jsonify({
             "success": True,
-            "message": "OTP sent to your registered email address",
-            "identifier_type": "email",
+            "message": message,
+            "identifier_type": identifier_type,
             "otp": otp  # Remove this in production
         }), 200
         
@@ -95,15 +112,28 @@ def reset_password():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Find admin by email and get stored OTP
-        cursor.execute(
-            "SELECT id, email, full_name, reset_otp, otp_expires_at FROM admin WHERE email = %s AND is_active = 1", 
-            (identifier,)
-        )
+        # Find admin by email or mobile and get stored OTP
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        mobile_pattern = r'^[0-9]{10}$'
+        
+        if re.match(email_pattern, identifier):
+            cursor.execute(
+                "SELECT id, email, mobile, full_name, reset_otp, otp_expires_at FROM admin WHERE email = %s AND is_active = 1", 
+                (identifier,)
+            )
+        elif re.match(mobile_pattern, identifier):
+            cursor.execute(
+                "SELECT id, email, mobile, full_name, reset_otp, otp_expires_at FROM admin WHERE mobile = %s AND is_active = 1", 
+                (identifier,)
+            )
+            cursor.fetchall()  # Consume any remaining results
+        else:
+            return jsonify({"success": False, "error": "Please enter a valid email address or 10-digit mobile number"}), 400
+        
         admin = cursor.fetchone()
         
         if not admin:
-            return jsonify({"success": False, "error": "Admin not found"}), 404
+            return jsonify({"success": False, "error": "No admin account found with this identifier"}), 404
         
         # Verify OTP exists and not expired
         if not admin['reset_otp'] or not admin['otp_expires_at']:
@@ -151,6 +181,7 @@ def admin_signup():
     data = request.get_json()
     full_name = data.get("full_name")
     email = data.get("email")
+    mobile = data.get("mobile")
     password = data.get("password")
     role = data.get("role", "ADMIN")  # Default role is ADMIN
 
@@ -171,14 +202,14 @@ def admin_signup():
 
     try:
         cur.execute(
-            "INSERT INTO admin (full_name, email, password, role, is_active, created_at) VALUES (%s, %s, %s, %s, TRUE, NOW())",
-            (full_name, email, hashed_password, role),
+            "INSERT INTO admin (full_name, email, mobile, password, role, is_active, created_at) VALUES (%s, %s, %s, %s, %s, TRUE, NOW())",
+            (full_name, email, mobile, hashed_password, role),
         )
         conn.commit()
 
         # Get the newly created admin
         cur.execute("""
-            SELECT id, full_name, email, role, profile_photo, created_at 
+            SELECT id, full_name, email, mobile, role, profile_photo, created_at 
             FROM admin 
             WHERE email = %s
         """, (email,))
@@ -194,6 +225,7 @@ def admin_signup():
                 "full_name": admin["full_name"],
                 "username": admin["full_name"],
                 "email": admin["email"],
+                "mobile": admin["mobile"],
                 "role": admin["role"],
                 "profile_photo": admin["profile_photo"]
             }
@@ -219,7 +251,7 @@ def admin_login():
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
     cur.execute("""
-        SELECT id, full_name, email, password, role, profile_photo, is_active 
+        SELECT id, full_name, email, mobile, password, role, profile_photo, is_active 
         FROM admin 
         WHERE email = %s
     """, (email,))
@@ -239,6 +271,7 @@ def admin_login():
                 "full_name": user["full_name"],
                 "username": user["full_name"],  # For header compatibility
                 "email": user["email"],
+                "mobile": user["mobile"],
                 "role": user["role"],
                 "profile_photo": user["profile_photo"]
             }
@@ -512,7 +545,7 @@ def get_admin_profile():
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT id, full_name, email, role, profile_photo, 
+            SELECT id, full_name, email, mobile, role, profile_photo, 
                    created_at, last_login
             FROM admin 
             WHERE id = %s AND is_active = TRUE
@@ -542,13 +575,19 @@ def update_admin_profile():
         cur = conn.cursor(dictionary=True)
         
         # Define updatable fields
-        updatable_fields = ["full_name", "email", "profile_photo"]
+        updatable_fields = ["full_name", "email", "mobile", "profile_photo"]
         
         update_fields = []
         update_values = []
         
         for field in updatable_fields:
             if field in data and data[field] is not None:
+                update_fields.append(f"{field} = %s")
+                update_values.append(data[field])
+            elif field in data and data[field] is None and field == "profile_photo":
+                # Handle explicit removal of profile photo
+                update_fields.append(f"{field} = %s")
+                update_values.append(None)
                 update_fields.append(f"{field} = %s")
                 update_values.append(data[field])
         
@@ -571,7 +610,7 @@ def update_admin_profile():
         
         # Fetch updated admin data
         cur.execute("""
-            SELECT id, full_name, email, role, profile_photo, created_at, last_login
+            SELECT id, full_name, email, mobile, role, profile_photo, created_at, last_login
             FROM admin 
             WHERE id = %s AND is_active = TRUE
         """, (admin_id,))
