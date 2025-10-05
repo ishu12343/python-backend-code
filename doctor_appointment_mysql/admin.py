@@ -7,9 +7,7 @@ from db import get_db_connection
 import random
 import datetime
 import re
-
-# Simple OTP storage (in production, use Redis or database)
-otp_storage = {}
+import traceback
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -17,39 +15,43 @@ admin_bp = Blueprint("admin", __name__)
 
 @admin_bp.route("/admin/forgot-password/send-otp", methods=["POST"])
 def send_otp():
-    """Send OTP for password reset"""
+    """Send OTP for password reset - Only works with registered admin emails"""
+    print("Admin forgot password send OTP endpoint called")
     data = request.get_json()
     identifier = data.get("identifier", "").strip()
+    print(f"Identifier received: {identifier}")
     
     if not identifier:
         return jsonify({"success": False, "error": "Email is required"}), 400
     
     try:
+        print("Attempting database connection...")
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
+        print("Database connection successful")
         
         # Admin only uses email (no mobile)
         email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         if not re.match(email_pattern, identifier):
             return jsonify({"success": False, "error": "Invalid email format"}), 400
         
+        # Check if admin exists and is active (registered email only)
         cursor.execute("SELECT id, email, full_name FROM admin WHERE email = %s AND is_active = 1", (identifier,))
         admin = cursor.fetchone()
         
         if not admin:
-            return jsonify({"success": False, "error": "Admin not found or inactive"}), 404
+            return jsonify({"success": False, "error": "No admin account found with this email address. Please use a registered email."}), 404
         
         # Generate 6-digit OTP
         otp = str(random.randint(100000, 999999))
+        expiry_time = datetime.datetime.now() + datetime.timedelta(minutes=10)
         
-        # Store OTP with expiration (10 minutes)
-        otp_key = f"admin_{admin['id']}"
-        otp_storage[otp_key] = {
-            "otp": otp,
-            "expires": datetime.datetime.now() + datetime.timedelta(minutes=10),
-            "identifier": identifier,
-            "type": "email"
-        }
+        # Store OTP in database (replace any existing OTP)
+        cursor.execute(
+            "UPDATE admin SET reset_otp = %s, otp_expires_at = %s WHERE id = %s",
+            (otp, expiry_time, admin['id'])
+        )
+        conn.commit()
         
         # In production, send OTP via Email service
         # For now, we'll just return success (OTP will be visible in logs for testing)
@@ -60,14 +62,15 @@ def send_otp():
         
         return jsonify({
             "success": True,
-            "message": "OTP sent to your email",
+            "message": "OTP sent to your registered email address",
             "identifier_type": "email",
             "otp": otp  # Remove this in production
         }), 200
         
     except Exception as e:
         print(f"Send OTP error: {str(e)}")
-        return jsonify({"success": False, "error": "Failed to send OTP"}), 500
+        print(f"Error details: {traceback.format_exc()}")
+        return jsonify({"success": False, "error": f"Failed to send OTP: {str(e)}"}), 500
 
 
 @admin_bp.route("/admin/forgot-password/reset", methods=["POST"])
@@ -92,53 +95,53 @@ def reset_password():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Find admin by email
-        cursor.execute("SELECT id, email, full_name FROM admin WHERE email = %s AND is_active = 1", (identifier,))
+        # Find admin by email and get stored OTP
+        cursor.execute(
+            "SELECT id, email, full_name, reset_otp, otp_expires_at FROM admin WHERE email = %s AND is_active = 1", 
+            (identifier,)
+        )
         admin = cursor.fetchone()
         
         if not admin:
             return jsonify({"success": False, "error": "Admin not found"}), 404
         
-        # Verify OTP
-        otp_key = f"admin_{admin['id']}"
-        stored_otp_data = otp_storage.get(otp_key)
+        # Verify OTP exists and not expired
+        if not admin['reset_otp'] or not admin['otp_expires_at']:
+            return jsonify({"success": False, "error": "No OTP found. Please request a new OTP."}), 400
         
-        if not stored_otp_data:
-            return jsonify({"success": False, "error": "OTP not found or expired"}), 400
+        if datetime.datetime.now() > admin['otp_expires_at']:
+            # Clear expired OTP
+            cursor.execute(
+                "UPDATE admin SET reset_otp = NULL, otp_expires_at = NULL WHERE id = %s",
+                (admin['id'],)
+            )
+            conn.commit()
+            return jsonify({"success": False, "error": "OTP has expired. Please request a new one."}), 400
         
-        if datetime.datetime.now() > stored_otp_data["expires"]:
-            del otp_storage[otp_key]
-            return jsonify({"success": False, "error": "OTP has expired"}), 400
-        
-        if stored_otp_data["otp"] != otp:
-            return jsonify({"success": False, "error": "Invalid OTP"}), 400
-        
-        if stored_otp_data["identifier"] != identifier:
-            return jsonify({"success": False, "error": "Identifier mismatch"}), 400
+        if admin['reset_otp'] != otp:
+            return jsonify({"success": False, "error": "Invalid OTP. Please check and try again."}), 400
         
         # Hash new password
         hashed_password = generate_password_hash(new_password)
         
-        # Update password
+        # Update password and clear OTP
         cursor.execute(
-            "UPDATE admin SET password = %s WHERE id = %s",
+            "UPDATE admin SET password = %s, reset_otp = NULL, otp_expires_at = NULL WHERE id = %s",
             (hashed_password, admin['id'])
         )
         conn.commit()
-        
-        # Clear OTP
-        del otp_storage[otp_key]
         
         cursor.close()
         conn.close()
         
         return jsonify({
             "success": True,
-            "message": "Password reset successfully"
+            "message": "Password reset successfully. You can now login with your new password."
         }), 200
         
     except Exception as e:
         print(f"Reset password error: {str(e)}")
+        print(f"Error details: {traceback.format_exc()}")
         return jsonify({"success": False, "error": "Failed to reset password"}), 500
 
 

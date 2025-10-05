@@ -11,9 +11,6 @@ from flask_jwt_extended import (
     get_jwt_identity, unset_jwt_cookies
 )
 
-# Simple OTP storage (in production, use Redis or database)
-otp_storage = {}
-
 SECRET_KEY = os.environ.get("SECRET_KEY", "your_dev_secret")
 
 doctor_bp = Blueprint("doctor", __name__, url_prefix="/api/doctor")
@@ -23,16 +20,20 @@ doctor_bp = Blueprint("doctor", __name__, url_prefix="/api/doctor")
 
 @doctor_bp.route("/forgot-password/send-otp", methods=["POST"])
 def send_otp():
-    """Send OTP for password reset"""
+    """Send OTP for password reset - Only works with registered doctor emails/mobiles"""
+    print("Doctor forgot password send OTP endpoint called")
     data = request.get_json()
     identifier = data.get("identifier", "").strip()
+    print(f"Identifier received: {identifier}")
     
     if not identifier:
         return jsonify({"success": False, "error": "Email or mobile number is required"}), 400
     
     try:
+        print("Attempting database connection...")
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
+        print("Database connection successful")
         
         # Check if it's email or mobile
         is_email = "@" in identifier
@@ -43,7 +44,11 @@ def send_otp():
             if not re.match(email_pattern, identifier):
                 return jsonify({"success": False, "error": "Invalid email format"}), 400
             
-            cursor.execute("SELECT id, email, full_name FROM doctors WHERE email = %s AND status = 'approved'", (identifier,))
+            # Check if doctor exists with this email (approved doctors only)
+            cursor.execute(
+                "SELECT id, email, full_name, approved, suspended FROM doctors WHERE email = %s", 
+                (identifier,)
+            )
             identifier_type = "email"
         else:
             # Validate mobile format (assuming 10 digits)
@@ -51,25 +56,41 @@ def send_otp():
             if not re.match(mobile_pattern, identifier.replace("-", "").replace(" ", "")):
                 return jsonify({"success": False, "error": "Invalid mobile number format"}), 400
             
-            cursor.execute("SELECT id, mobile, full_name FROM doctors WHERE mobile = %s AND status = 'approved'", (identifier,))
+            # Check if doctor exists with this mobile (approved doctors only)
+            cursor.execute(
+                "SELECT id, mobile, full_name, approved, suspended FROM doctors WHERE mobile = %s", 
+                (identifier,)
+            )
             identifier_type = "mobile"
         
         doctor = cursor.fetchone()
         
+        # Consume any remaining results to avoid "Unread result found" error
+        try:
+            cursor.fetchall()
+        except Exception:
+            pass
+        
         if not doctor:
-            return jsonify({"success": False, "error": "Doctor not found or not approved"}), 404
+            return jsonify({"success": False, "error": f"No doctor account found with this {identifier_type}. Please use a registered {identifier_type} address."}), 404
+        
+        # Check if doctor is approved and not suspended
+        if not doctor.get('approved'):
+            return jsonify({"success": False, "error": "Your doctor account is pending approval. Please contact admin."}), 403
+        
+        if doctor.get('suspended'):
+            return jsonify({"success": False, "error": "Your doctor account is suspended. Please contact admin."}), 403
         
         # Generate 6-digit OTP
         otp = str(random.randint(100000, 999999))
+        expiry_time = datetime.datetime.now() + datetime.timedelta(minutes=10)
         
-        # Store OTP with expiration (10 minutes)
-        otp_key = f"doctor_{doctor['id']}"
-        otp_storage[otp_key] = {
-            "otp": otp,
-            "expires": datetime.datetime.now() + datetime.timedelta(minutes=10),
-            "identifier": identifier,
-            "type": identifier_type
-        }
+        # Store OTP in database (replace any existing OTP)
+        cursor.execute(
+            "UPDATE doctors SET reset_otp = %s, otp_expires_at = %s WHERE id = %s",
+            (otp, expiry_time, doctor['id'])
+        )
+        conn.commit()
         
         # In production, send OTP via SMS/Email service
         # For now, we'll just return success (OTP will be visible in logs for testing)
@@ -80,14 +101,15 @@ def send_otp():
         
         return jsonify({
             "success": True,
-            "message": f"OTP sent to your {identifier_type}",
+            "message": f"OTP sent to your registered {identifier_type}",
             "identifier_type": identifier_type,
             "otp": otp  # Remove this in production
         }), 200
         
     except Exception as e:
         print(f"Send OTP error: {str(e)}")
-        return jsonify({"success": False, "error": "Failed to send OTP"}), 500
+        print(f"Error details: {traceback.format_exc()}")
+        return jsonify({"success": False, "error": f"Failed to send OTP: {str(e)}"}), 500
 
 
 @doctor_bp.route("/forgot-password/reset", methods=["POST"])
@@ -112,59 +134,69 @@ def reset_password():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Find doctor by identifier
+        # Find doctor by identifier and get stored OTP
         is_email = "@" in identifier
         
         if is_email:
-            cursor.execute("SELECT id, email, full_name FROM doctors WHERE email = %s AND status = 'approved'", (identifier,))
+            cursor.execute(
+                "SELECT id, email, full_name, reset_otp, otp_expires_at, approved, suspended FROM doctors WHERE email = %s", 
+                (identifier,)
+            )
         else:
-            cursor.execute("SELECT id, mobile, full_name FROM doctors WHERE mobile = %s AND status = 'approved'", (identifier,))
+            cursor.execute(
+                "SELECT id, mobile, full_name, reset_otp, otp_expires_at, approved, suspended FROM doctors WHERE mobile = %s", 
+                (identifier,)
+            )
         
         doctor = cursor.fetchone()
         
         if not doctor:
             return jsonify({"success": False, "error": "Doctor not found"}), 404
         
-        # Verify OTP
-        otp_key = f"doctor_{doctor['id']}"
-        stored_otp_data = otp_storage.get(otp_key)
+        # Check if doctor is approved and not suspended
+        if not doctor.get('approved'):
+            return jsonify({"success": False, "error": "Your doctor account is pending approval. Please contact admin."}), 403
         
-        if not stored_otp_data:
-            return jsonify({"success": False, "error": "OTP not found or expired"}), 400
+        if doctor.get('suspended'):
+            return jsonify({"success": False, "error": "Your doctor account is suspended. Please contact admin."}), 403
         
-        if datetime.datetime.now() > stored_otp_data["expires"]:
-            del otp_storage[otp_key]
-            return jsonify({"success": False, "error": "OTP has expired"}), 400
+        # Verify OTP exists and not expired
+        if not doctor['reset_otp'] or not doctor['otp_expires_at']:
+            return jsonify({"success": False, "error": "No OTP found. Please request a new OTP."}), 400
         
-        if stored_otp_data["otp"] != otp:
-            return jsonify({"success": False, "error": "Invalid OTP"}), 400
+        if datetime.datetime.now() > doctor['otp_expires_at']:
+            # Clear expired OTP
+            cursor.execute(
+                "UPDATE doctors SET reset_otp = NULL, otp_expires_at = NULL WHERE id = %s",
+                (doctor['id'],)
+            )
+            conn.commit()
+            return jsonify({"success": False, "error": "OTP has expired. Please request a new one."}), 400
         
-        if stored_otp_data["identifier"] != identifier:
-            return jsonify({"success": False, "error": "Identifier mismatch"}), 400
+        if doctor['reset_otp'] != otp:
+            return jsonify({"success": False, "error": "Invalid OTP. Please check and try again."}), 400
         
         # Hash new password
         hashed_password = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt())
         
-        # Update password
+        # Update password and clear OTP
         cursor.execute(
-            "UPDATE doctors SET password = %s, updated_at = NOW() WHERE id = %s",
+            "UPDATE doctors SET password = %s, reset_otp = NULL, otp_expires_at = NULL, updated_at = NOW() WHERE id = %s",
             (hashed_password.decode("utf-8"), doctor['id'])
         )
         conn.commit()
-        
-        # Clear OTP
-        del otp_storage[otp_key]
         
         cursor.close()
         conn.close()
         
         return jsonify({
             "success": True,
-            "message": "Password reset successfully"
+            "message": "Password reset successfully. You can now login with your new password."
         }), 200
         
     except Exception as e:
         print(f"Reset password error: {str(e)}")
+        print(f"Error details: {traceback.format_exc()}")
         return jsonify({"success": False, "error": "Failed to reset password"}), 500
 
 
