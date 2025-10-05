@@ -361,16 +361,28 @@ def login():
         if data is None:
             return jsonify({"error": "Invalid or missing JSON payload"}), 400
 
-        email = data.get("email", "").lower()
+        identifier = (data.get("email") or data.get("identifier", "")).lower()
         password = data.get("password")
 
-        if not email or not password:
-            return jsonify({"error": "Email and password required"}), 400
+        if not identifier or not password:
+            return jsonify({"error": "Email/mobile and password required"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        cursor.execute("SELECT * FROM patient WHERE email = %s", (email,))
+        # Determine if identifier is email or mobile
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        mobile_pattern = r'^[0-9]{10}$'
+        
+        if re.match(email_pattern, identifier):
+            cursor.execute("SELECT * FROM patient WHERE email = %s", (identifier,))
+        elif re.match(mobile_pattern, identifier):
+            cursor.execute("SELECT * FROM patient WHERE mobile = %s", (identifier,))
+        else:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Please enter a valid email address or 10-digit mobile number"}), 400
+            
         patient = cursor.fetchone()
         conn.close()
 
@@ -394,7 +406,7 @@ def login():
                 }
             }), 200
         else:
-            return jsonify({"error": "Invalid email or password"}), 401
+            return jsonify({"error": "Invalid email/mobile or password"}), 401
 
     except Exception as e:
         logging.exception("Login Error")

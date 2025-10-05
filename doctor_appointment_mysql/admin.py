@@ -242,19 +242,35 @@ def admin_signup():
 @admin_bp.route("/admin/login", methods=["POST"])
 def admin_login():
     data = request.get_json()
-    email = data.get("email")
+    identifier = data.get("email") or data.get("identifier")  # Support both email field and identifier field
     pwd = data.get("password")
 
-    if not email or not pwd:
-        return jsonify(error="Email and password are required"), 400
+    if not identifier or not pwd:
+        return jsonify(error="Email/mobile and password are required"), 400
 
     conn = get_db_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute("""
-        SELECT id, full_name, email, mobile, password, role, profile_photo, is_active 
-        FROM admin 
-        WHERE email = %s
-    """, (email,))
+    
+    # Determine if identifier is email or mobile
+    email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    mobile_pattern = r'^[0-9]{10}$'
+    
+    if re.match(email_pattern, identifier):
+        cur.execute("""
+            SELECT id, full_name, email, mobile, password, role, profile_photo, is_active 
+            FROM admin 
+            WHERE email = %s
+        """, (identifier,))
+    elif re.match(mobile_pattern, identifier):
+        cur.execute("""
+            SELECT id, full_name, email, mobile, password, role, profile_photo, is_active 
+            FROM admin 
+            WHERE mobile = %s
+        """, (identifier,))
+    else:
+        conn.close()
+        return jsonify(error="Please enter a valid email address or 10-digit mobile number"), 400
+        
     user = cur.fetchone()
     
     if user and user["is_active"] and check_password_hash(user["password"], pwd):

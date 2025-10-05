@@ -289,13 +289,31 @@ def register():
 def login():
     data = request.get_json()
     try:
+        identifier = data.get("email") or data.get("identifier")  # Support both email field and identifier field
+        password = data.get("password")
+        
+        if not identifier or not password:
+            return jsonify({"success": False, "error": "Email/mobile and password are required"}), 400
+        
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        cursor.execute("SELECT * FROM doctors WHERE email = %s", (data["email"],))
+        # Determine if identifier is email or mobile
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        mobile_pattern = r'^[0-9]{10}$'
+        
+        if re.match(email_pattern, identifier):
+            cursor.execute("SELECT * FROM doctors WHERE email = %s", (identifier,))
+        elif re.match(mobile_pattern, identifier):
+            cursor.execute("SELECT * FROM doctors WHERE mobile = %s", (identifier,))
+        else:
+            cursor.close()
+            conn.close()
+            return jsonify({"success": False, "error": "Please enter a valid email address or 10-digit mobile number"}), 400
+            
         doctor = cursor.fetchone()
 
-        if doctor and bcrypt.checkpw(data["password"].encode("utf-8"), doctor["password"].encode("utf-8")):
+        if doctor and bcrypt.checkpw(password.encode("utf-8"), doctor["password"].encode("utf-8")):
             # Check if doctor is approved and not suspended
             if not doctor.get("approved"):
                 cursor.close()
