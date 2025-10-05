@@ -263,7 +263,6 @@ def register():
         gender = data.get("gender")
         blood_group = data.get("bloodGroup")
         address = data.get("address")
-        emergency_contact = data.get("emergencyContact")
         city = data.get("city")
         state = data.get("state")
         zip_code = data.get("zip")
@@ -312,20 +311,20 @@ def register():
         cursor.execute("""
             INSERT INTO patient (
                 full_name, email, password, mobile, gender, date_of_birth, blood_group,
-                address, emergency_contact, city, state, zip, country,
+                address, city, state, zip, country,
                 allergies, conditions, medications, surgeries,
                 emergency_contact_name, emergency_contact_number, document_path,
                 role, is_active, verified, created_at, updated_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s, NOW(), NOW()
             )
         """, (
             full_name, email, hashed_password, mobile, gender, date_of_birth, blood_group,
-            address, emergency_contact, city, state, zip_code, country,
+            address, city, state, zip_code, country,
             allergies, conditions, medications, surgeries,
             emergency_contact_name, emergency_contact_number, document_path,
             role, True, False
@@ -430,7 +429,7 @@ def get_profile():
 
         cursor.execute("""
             SELECT id, full_name, email, mobile, gender, date_of_birth, blood_group,
-                   address, emergency_contact, city, state, zip, country,
+                   address, city, state, zip, country,
                    allergies, conditions, medications, surgeries,
                    emergency_contact_name, emergency_contact_number, document_path,
                    photo_path, role, is_active, verified, created_at, updated_at
@@ -489,7 +488,6 @@ def update_patient_profile():
             "date_of_birth": data.get("dob"),  # frontend sends 'dob'
             "blood_group": data.get("blood_group"),
             "address": data.get("address"),
-            "emergency_contact": data.get("emergency_contact"),
             "photo_path": photo_data,
             "city": data.get("city"),
             "state": data.get("state"),
