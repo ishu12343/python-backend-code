@@ -324,7 +324,7 @@ def view_doctors():
             SELECT id, full_name, email, mobile, location,
                    registration_number, council, degree, specialty,
                    experience, clinic_name, clinic_address, role,
-                   approved, suspended, documents_verified
+                   approved, suspended
             FROM doctors
             WHERE id = %s
         """, (doctor_id,))
@@ -333,6 +333,16 @@ def view_doctors():
 
         if not doctor:
             return jsonify(success=False, error="Doctor not found"), 404
+
+        # Convert datetime/timedelta objects to strings for JSON serialization
+        if doctor:
+            for key, value in doctor.items():
+                if hasattr(value, 'isoformat'):  # datetime objects
+                    doctor[key] = value.isoformat()
+                elif hasattr(value, 'total_seconds'):  # timedelta objects
+                    doctor[key] = str(value)
+                elif value is None:
+                    doctor[key] = None
 
         return jsonify(success=True, data=doctor), 200
 
@@ -362,10 +372,20 @@ def view_patient():
         if not patient:
             return jsonify(success=False, error="Patient not found"), 404
 
+        # Convert datetime/timedelta objects to strings for JSON serialization
+        if patient:
+            for key, value in patient.items():
+                if hasattr(value, 'isoformat'):  # datetime objects
+                    patient[key] = value.isoformat()
+                elif hasattr(value, 'total_seconds'):  # timedelta objects
+                    patient[key] = str(value)
+                elif value is None:
+                    patient[key] = None
+
         return jsonify(success=True, data=patient), 200
 
     except Exception as e:
-        return jsonify(success=False, error="Failed to fetch doctor", details=str(e)), 500
+        return jsonify(success=False, error="Failed to fetch patient", details=str(e)), 500
 
 
 # --- Approve Doctor ---
